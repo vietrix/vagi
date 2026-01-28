@@ -10,6 +10,17 @@ from torch.utils.data import Dataset
 from vagi_core import VAGIConfig
 
 
+def shift_labels(input_ids: torch.Tensor, ignore_index: int = -100) -> torch.Tensor:
+    """Create next-token labels with last position masked."""
+    if input_ids.dtype != torch.long:
+        raise TypeError("input_ids must be torch.long to create labels")
+    labels = input_ids.clone()
+    if labels.shape[-1] > 1:
+        labels[..., :-1] = input_ids[..., 1:]
+    labels[..., -1] = ignore_index
+    return labels
+
+
 class TensorDictDataset(Dataset):
     """Dataset backed by a dict of tensors with leading batch dimension."""
 
@@ -61,7 +72,7 @@ class RandomDataset(Dataset):
         gen = torch.Generator()
         gen.manual_seed(self.seed + idx)
         input_ids = torch.randint(0, self.vocab_size, (self.seq_len,), dtype=torch.long, generator=gen)
-        labels = input_ids.clone()
+        labels = shift_labels(input_ids)
         batch: Dict[str, torch.Tensor] = {
             "input_ids": input_ids,
             "labels": labels,

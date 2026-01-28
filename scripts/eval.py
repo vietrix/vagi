@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from vagi_core import VAGIConfig, VAGICore
 
 from scripts.checkpoint import load_checkpoint, load_config_from_checkpoint
-from scripts.data_utils import RandomDataset, load_tensor_dataset, move_batch_to_device, validate_batch
+from scripts.data_utils import RandomDataset, load_tensor_dataset, move_batch_to_device, shift_labels, validate_batch
 
 
 def parse_args() -> argparse.Namespace:
@@ -98,7 +98,9 @@ def main() -> None:
             validate_batch(batch, cfg, require_obs=args.with_obs)
 
             input_ids = batch["input_ids"]
-            labels = batch.get("labels", input_ids)
+            labels = batch.get("labels")
+            if labels is None:
+                labels = shift_labels(input_ids)
             obs = batch.get("obs") if args.with_obs else None
             state = model.init_state(input_ids.shape[0], device=device)
 
