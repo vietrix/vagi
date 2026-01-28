@@ -1,159 +1,142 @@
-"""Train vAGI-core on a tensor dataset or random synthetic data."""
+"""Minimal language-model training script for vAGI-core."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Dict
+from typing import Optional
 
 import torch
 from torch.utils.data import DataLoader
 
 from vagi_core import VAGIConfig, VAGICore
 
-from scripts.checkpoint import load_checkpoint, load_config_from_checkpoint, save_checkpoint
-from scripts.data_utils import RandomDataset, load_tensor_dataset, move_batch_to_device, shift_labels, validate_batch
+from scripts.collate import make_collate_fn
+from scripts.config import TrainConfig
+from scripts.dataset_text import TextDataset, build_tokenizer, load_texts
+from vagi_io.checkpoint import load_checkpoint, save_checkpoint
+from scripts.utils import get_lr, set_seed
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train vAGI-core.")
-    parser.add_argument("--data", type=str, default=None, help="Path to a torch-saved dict dataset (.pt)")
+    parser = argparse.ArgumentParser(description="Train vAGI-core on a tiny text dataset.")
+    parser.add_argument("--data", type=str, default="data/sample/sample.txt")
+    parser.add_argument("--out-dir", type=str, default="runs/minimal")
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--steps-per-epoch", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--seq-len", type=int, default=16)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--with-obs", action="store_true", help="Use obs inputs")
-    parser.add_argument("--with-world", action="store_true", help="Enable world prediction head/loss")
-    parser.add_argument("--log-every", type=int, default=20)
-    parser.add_argument("--save", type=str, default=None, help="Checkpoint directory or .safetensors file")
-    parser.add_argument("--resume", type=str, default=None, help="Checkpoint directory or .safetensors file")
+    parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--save-every", type=int, default=50)
+    parser.add_argument("--log-every", type=int, default=10)
+    parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--vocab-size", type=int, default=128)
+    parser.add_argument("--max-seq-len", type=int, default=64)
     parser.add_argument("--hidden-size", type=int, default=64)
     parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
-    parser.add_argument("--obs-dim", type=int, default=16)
-    parser.add_argument("--obs-tokens", type=int, default=2)
+    parser.add_argument("--mlp-ratio", type=float, default=2.0)
+    parser.add_argument("--obs-dim", type=int, default=0)
+    parser.add_argument("--obs-tokens", type=int, default=0)
     parser.add_argument("--action-dim", type=int, default=8)
     parser.add_argument("--memory-slots", type=int, default=4)
     return parser.parse_args()
 
 
-def build_config(args: argparse.Namespace) -> VAGIConfig:
-    return VAGIConfig(
-        vocab_size=args.vocab_size,
+def build_train_config(args: argparse.Namespace) -> TrainConfig:
+    return TrainConfig(
+        data_path=args.data,
+        out_dir=args.out_dir,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        max_steps=args.max_steps,
+        save_every=args.save_every,
+        log_every=args.log_every,
+        seed=args.seed,
+        max_seq_len=args.max_seq_len,
         hidden_size=args.hidden_size,
         n_layers=args.layers,
         n_heads=args.heads,
-        n_kv_heads=args.heads,
-        mlp_ratio=2.0,
-        max_seq_len=max(args.seq_len, 8),
+        mlp_ratio=args.mlp_ratio,
         obs_dim=args.obs_dim,
         obs_tokens=args.obs_tokens,
         action_dim=args.action_dim,
         memory_slots=args.memory_slots,
-        dropout=0.0,
-        use_world_pred=args.with_world,
+        use_world_pred=False,
     )
-
-
-def build_dataloader(args: argparse.Namespace, cfg: VAGIConfig) -> DataLoader:
-    if args.data:
-        dataset = load_tensor_dataset(args.data)
-    else:
-        num_samples = args.steps_per_epoch * args.batch_size
-        dataset = RandomDataset(
-            num_samples=num_samples,
-            seq_len=args.seq_len,
-            vocab_size=cfg.vocab_size,
-            obs_dim=cfg.obs_dim,
-            action_dim=cfg.action_dim,
-            with_obs=args.with_obs,
-            with_world=args.with_world,
-            seed=args.seed,
-        )
-    return DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
 
 def main() -> None:
     args = parse_args()
-    torch.manual_seed(args.seed)
-    device = torch.device(args.device)
+    cfg = build_train_config(args)
+    set_seed(cfg.seed)
 
-    cfg = load_config_from_checkpoint(args.resume) if args.resume else None
-    if cfg is None:
-        cfg = build_config(args)
-    model = VAGICore(cfg).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    global_step = 0
+    texts = load_texts(cfg.data_path)
+    tokenizer = build_tokenizer(texts)
+    dataset = TextDataset(texts, tokenizer, max_length=cfg.max_seq_len)
 
-    if args.resume:
-        meta = load_checkpoint(args.resume, model=model, optimizer=optimizer, device=device)
-        global_step = int(meta.get("step", 0))
+    collate_fn = make_collate_fn(
+        pad_id=tokenizer.pad_id,
+        max_length=cfg.max_seq_len,
+        obs_dim=cfg.obs_dim,
+        add_obs=cfg.obs_dim > 0,
+    )
+    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn)
 
-    loader = build_dataloader(args, cfg)
+    model_cfg = VAGIConfig(
+        vocab_size=tokenizer.vocab_size,
+        hidden_size=cfg.hidden_size,
+        n_layers=cfg.n_layers,
+        n_heads=cfg.n_heads,
+        n_kv_heads=cfg.n_heads,
+        mlp_ratio=cfg.mlp_ratio,
+        max_seq_len=cfg.max_seq_len,
+        obs_dim=max(cfg.obs_dim, 1) if cfg.obs_dim > 0 else 1,
+        obs_tokens=cfg.obs_tokens,
+        action_dim=cfg.action_dim,
+        memory_slots=cfg.memory_slots,
+        dropout=0.0,
+        use_world_pred=False,
+    )
+
+    model = VAGICore(model_cfg)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
     model.train()
+
+    out_dir = Path(cfg.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    step = 0
+    if args.resume:
+        meta = load_checkpoint(model, optimizer=optimizer, ckpt_path=args.resume)
+        step = int(meta.get("step", 0))
     for epoch in range(args.epochs):
-        for step_idx, batch in enumerate(loader):
-            if args.data is None and step_idx >= args.steps_per_epoch:
-                break
-            batch = move_batch_to_device(batch, device)
-            validate_batch(batch, cfg, require_obs=args.with_obs)
-
+        for batch in loader:
             input_ids = batch["input_ids"]
-            labels = batch.get("labels")
-            if labels is None:
-                labels = shift_labels(input_ids)
-            obs = batch.get("obs") if args.with_obs else None
-            state = model.init_state(input_ids.shape[0], device=device)
+            labels = batch["labels"]
+            obs = batch.get("obs") if cfg.obs_dim > 0 else None
+            state = model.init_state(input_ids.shape[0])
 
-            targets: Dict[str, torch.Tensor] = {}
-            if "actions" in batch:
-                targets["actions"] = batch["actions"]
-            if "values" in batch:
-                targets["values"] = batch["values"]
-            if args.with_world and "obs_next" in batch:
-                targets["obs_next"] = batch["obs_next"]
-
-            out = model.forward(
-                input_ids=input_ids,
-                obs=obs,
-                state=state,
-                labels=labels,
-                targets=targets,
-                return_loss=True,
-            )
+            out = model.forward(input_ids=input_ids, obs=obs, state=state, labels=labels, return_loss=True)
             loss = out["loss"]
             if loss is None:
-                raise ValueError("No loss computed. Ensure labels/targets are provided.")
+                raise ValueError("No loss returned by model.")
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
 
-            global_step += 1
-            if global_step % args.log_every == 0:
-                print(f"epoch={epoch + 1} step={global_step} loss={loss.item():.6f}")
+            step += 1
+            if step % cfg.log_every == 0:
+                print(f"step={step} loss={loss.item():.6f} lr={get_lr(optimizer):.6f}")
 
-    if args.save:
-        save_path = Path(args.save)
-        model_filename = "model.safetensors"
-        checkpoint_dir = save_path
-        if save_path.suffix == ".safetensors":
-            checkpoint_dir = save_path.parent
-            model_filename = save_path.name
-        save_checkpoint(
-            checkpoint_dir=checkpoint_dir,
-            model=model,
-            optimizer=optimizer,
-            config=cfg,
-            step=global_step,
-            extra={"epoch": args.epochs},
-            model_filename=model_filename,
-        )
-        print(f"Saved checkpoint to {checkpoint_dir}")
+            if cfg.save_every and step % cfg.save_every == 0:
+                save_checkpoint(model, optimizer, step=step, out_dir=out_dir, extra={"epoch": epoch + 1})
+
+            if cfg.max_steps is not None and step >= cfg.max_steps:
+                break
+        if cfg.max_steps is not None and step >= cfg.max_steps:
+            break
 
 
 if __name__ == "__main__":
