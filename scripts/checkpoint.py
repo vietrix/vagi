@@ -1,4 +1,4 @@
-"""Checkpoint utilities using safetensors for vAGI-core."""
+"""Checkpoint utilities using safetensors for vAGI."""
 
 from __future__ import annotations
 

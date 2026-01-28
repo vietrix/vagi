@@ -1,4 +1,4 @@
-"""Dataset helpers for vAGI-core scripts."""
+"""Dataset helpers for vAGI scripts."""
 
 from __future__ import annotations
 

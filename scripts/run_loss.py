@@ -10,7 +10,7 @@ from vagi_core import VAGIConfig, VAGICore
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run vAGI-core loss computation.")
+    parser = argparse.ArgumentParser(description="Run vAGI loss computation.")
     parser.add_argument("--batch", type=int, default=2)
     parser.add_argument("--tokens", type=int, default=5)
     parser.add_argument("--with-obs", action="store_true")

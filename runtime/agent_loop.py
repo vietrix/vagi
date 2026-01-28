@@ -1,4 +1,4 @@
-"""Minimal agent loop for vAGI-core."""
+"""Minimal agent loop for vAGI."""
 
 from __future__ import annotations
 

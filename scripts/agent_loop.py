@@ -1,4 +1,4 @@
-"""Run a minimal agent loop using vAGI-core and the toy environment."""
+"""Run a minimal agent loop using vAGI and the toy environment."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from scripts.toy_env import ToyEnv
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a toy agent loop with vAGI-core.")
+    parser = argparse.ArgumentParser(description="Run a toy agent loop with vAGI.")
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--seed", type=int, default=0)

@@ -1,4 +1,4 @@
-"""Loss functions for vAGI-core."""
+"""Loss functions for vAGI."""
 
 from __future__ import annotations
 

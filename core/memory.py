@@ -25,7 +25,7 @@ class KVCache:
 
 @dataclass
 class RecurrentState:
-    """Recurrent state for vAGI-core."""
+    """Recurrent state for vAGI."""
 
     mem: torch.Tensor
     kv: KVCache

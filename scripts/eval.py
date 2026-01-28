@@ -1,4 +1,4 @@
-"""Evaluate vAGI-core losses on a dataset."""
+"""Evaluate vAGI losses on a dataset."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from scripts.data_utils import RandomDataset, load_tensor_dataset, move_batch_to
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate vAGI-core.")
+    parser = argparse.ArgumentParser(description="Evaluate vAGI.")
     parser.add_argument("--data", type=str, default=None, help="Path to a torch-saved dict dataset (.pt)")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--seq-len", type=int, default=16)

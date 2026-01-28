@@ -1,4 +1,4 @@
-"""Main vAGI-core model."""
+"""Main vAGI model."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .utils import check_floating, check_shape
 
 
 class VAGICore(nn.Module):
-    """vAGI-core causal transformer with recurrent state."""
+    """vAGI causal transformer with recurrent state."""
 
     def __init__(self, cfg: VAGIConfig) -> None:
         super().__init__()

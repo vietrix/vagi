@@ -1,4 +1,4 @@
-"""vAGI-core public API."""
+"""vAGI public API."""
 
 from .config import VAGIConfig
 from .memory import KVCache, RecurrentState

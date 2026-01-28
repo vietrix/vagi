@@ -1,1 +1,1 @@
-"""Utility scripts for vAGI-core."""
+"""Utility scripts for vAGI."""

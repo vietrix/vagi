@@ -1,4 +1,4 @@
-"""Backbone components for vAGI-core."""
+"""Backbone components for vAGI."""
 
 from __future__ import annotations
 

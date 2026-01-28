@@ -1,4 +1,4 @@
-"""Minimal language-model training script for vAGI-core."""
+"""Minimal language-model training script for vAGI."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from scripts.utils import get_lr, set_seed
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train vAGI-core on a tiny text dataset.")
+    parser = argparse.ArgumentParser(description="Train vAGI on a tiny text dataset.")
     parser.add_argument("--data", type=str, default="data/sample/sample.txt")
     parser.add_argument("--out-dir", type=str, default="runs/minimal")
     parser.add_argument("--epochs", type=int, default=1)

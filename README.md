@@ -1,6 +1,6 @@
-# vAGI-core
+# vAGI
 
-vAGI-core is a compact, single-checkpoint causal transformer core with a recurrent state and multi-head outputs for text, actions, value, and optional world prediction.
+vAGI is a compact, single-checkpoint causal transformer core with a recurrent state and multi-head outputs for text, actions, value, and optional world prediction.
 
 ## Quickstart
 

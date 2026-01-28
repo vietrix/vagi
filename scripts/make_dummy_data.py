@@ -1,4 +1,4 @@
-"""Create a dummy torch dataset for vAGI-core scripts."""
+"""Create a dummy torch dataset for vAGI scripts."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import torch
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate a dummy dataset for vAGI-core.")
+    parser = argparse.ArgumentParser(description="Generate a dummy dataset for vAGI.")
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--num-samples", type=int, default=256)
     parser.add_argument("--seq-len", type=int, default=16)

@@ -1,4 +1,4 @@
-"""Deterministic toy environment for vAGI-core."""
+"""Deterministic toy environment for vAGI."""
 
 from __future__ import annotations
 

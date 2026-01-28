@@ -1,4 +1,4 @@
-"""Output heads for vAGI-core."""
+"""Output heads for vAGI."""
 
 from __future__ import annotations
 

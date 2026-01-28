@@ -1,4 +1,4 @@
-"""Configuration for vAGI-core."""
+"""Configuration for vAGI."""
 
 from __future__ import annotations
 

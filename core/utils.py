@@ -1,4 +1,4 @@
-"""Utility helpers for vAGI-core."""
+"""Utility helpers for vAGI."""
 
 from __future__ import annotations
 
