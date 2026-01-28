@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import Dict
 
 import torch
@@ -10,6 +11,7 @@ from torch.utils.data import DataLoader
 
 from vagi_core import VAGIConfig, VAGICore
 
+from scripts.checkpoint import load_checkpoint, load_config_from_checkpoint
 from scripts.data_utils import RandomDataset, load_tensor_dataset, move_batch_to_device, validate_batch
 
 
@@ -22,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--with-obs", action="store_true")
     parser.add_argument("--with-world", action="store_true")
-    parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint (.pt)")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint directory or .safetensors file")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--vocab-size", type=int, default=128)
     parser.add_argument("--hidden-size", type=int, default=64)
@@ -76,11 +78,12 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
 
-    cfg = build_config(args)
+    cfg = load_config_from_checkpoint(args.checkpoint) if args.checkpoint else None
+    if cfg is None:
+        cfg = build_config(args)
     model = VAGICore(cfg).to(device)
     if args.checkpoint:
-        payload = torch.load(args.checkpoint, map_location=device)
-        model.load_state_dict(payload["model_state"])
+        load_checkpoint(args.checkpoint, model=model, optimizer=None, device=device)
     model.eval()
 
     loader = build_dataloader(args, cfg)

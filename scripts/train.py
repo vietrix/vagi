@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import argparse
-from typing import Dict, Optional
+from pathlib import Path
+from typing import Dict
 
 import torch
-from torch import nn
 from torch.utils.data import DataLoader
 
 from vagi_core import VAGIConfig, VAGICore
 
+from scripts.checkpoint import load_checkpoint, load_config_from_checkpoint, save_checkpoint
 from scripts.data_utils import RandomDataset, load_tensor_dataset, move_batch_to_device, validate_batch
 
 
@@ -26,7 +27,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--with-obs", action="store_true", help="Use obs inputs")
     parser.add_argument("--with-world", action="store_true", help="Enable world prediction head/loss")
     parser.add_argument("--log-every", type=int, default=20)
-    parser.add_argument("--save", type=str, default=None, help="Path to save model checkpoint (.pt)")
+    parser.add_argument("--save", type=str, default=None, help="Checkpoint directory or .safetensors file")
+    parser.add_argument("--resume", type=str, default=None, help="Checkpoint directory or .safetensors file")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--vocab-size", type=int, default=128)
     parser.add_argument("--hidden-size", type=int, default=64)
@@ -80,13 +82,18 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
 
-    cfg = build_config(args)
+    cfg = load_config_from_checkpoint(args.resume) if args.resume else None
+    if cfg is None:
+        cfg = build_config(args)
     model = VAGICore(cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-
-    loader = build_dataloader(args, cfg)
     global_step = 0
 
+    if args.resume:
+        meta = load_checkpoint(args.resume, model=model, optimizer=optimizer, device=device)
+        global_step = int(meta.get("step", 0))
+
+    loader = build_dataloader(args, cfg)
     model.train()
     for epoch in range(args.epochs):
         for step_idx, batch in enumerate(loader):
@@ -129,9 +136,22 @@ def main() -> None:
                 print(f"epoch={epoch + 1} step={global_step} loss={loss.item():.6f}")
 
     if args.save:
-        payload = {"model_state": model.state_dict(), "config": cfg.__dict__}
-        torch.save(payload, args.save)
-        print(f"Saved checkpoint to {args.save}")
+        save_path = Path(args.save)
+        model_filename = "model.safetensors"
+        checkpoint_dir = save_path
+        if save_path.suffix == ".safetensors":
+            checkpoint_dir = save_path.parent
+            model_filename = save_path.name
+        save_checkpoint(
+            checkpoint_dir=checkpoint_dir,
+            model=model,
+            optimizer=optimizer,
+            config=cfg,
+            step=global_step,
+            extra={"epoch": args.epochs},
+            model_filename=model_filename,
+        )
+        print(f"Saved checkpoint to {checkpoint_dir}")
 
 
 if __name__ == "__main__":
