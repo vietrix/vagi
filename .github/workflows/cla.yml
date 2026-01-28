@@ -1,0 +1,76 @@
+name: CLA Check
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  pull-requests: write
+  issues: write
+  checks: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate CLA acknowledgment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const phrase = "I agree to the CLA";
+            const marker = "[CLA REQUEST]";
+
+            let prNumber = null;
+            if (context.eventName === "pull_request_target") {
+              prNumber = context.payload.pull_request.number;
+            } else if (context.eventName === "issue_comment") {
+              if (!context.payload.issue.pull_request) {
+                core.info("Not a PR comment. Skipping.");
+                return;
+              }
+              prNumber = context.payload.issue.number;
+            } else {
+              core.info("Unsupported event. Skipping.");
+              return;
+            }
+
+            const pr = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            });
+            const prAuthor = pr.data.user.login;
+
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number: prNumber, per_page: 100 }
+            );
+
+            const hasAgreement = comments.some((c) =>
+              c.user && c.user.login === prAuthor && c.body && c.body.includes(phrase)
+            );
+
+            const hasBotRequest = comments.some((c) =>
+              c.user && c.user.type === "Bot" && c.body && c.body.includes(marker)
+            );
+
+            if (!hasAgreement) {
+              if (!hasBotRequest) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  body:
+                    `${marker}\n\n` +
+                    "Please reply **I agree to the CLA** in this pull request to confirm you accept the CLA terms in `.github/CLA.md`.",
+                });
+              }
+              core.setFailed("CLA not signed by PR author.");
+              return;
+            }
+
+            core.info("CLA signed by PR author.");

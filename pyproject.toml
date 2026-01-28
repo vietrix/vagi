@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vagi-core"
+version = "0.1.0"
+description = "vAGI-core: a compact causal transformer core with recurrent state for agent-style models."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "vAGI contributors" }]
+dependencies = [
+  "torch>=2.0",
+  "transformers>=4.40",
+  "safetensors>=0.4",
+  "accelerate>=0.30",
+  "pytest>=7.4",
+]
+
+[tool.setuptools]
+packages = ["vagi_core"]
+package-dir = { "vagi_core" = "core" }
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
