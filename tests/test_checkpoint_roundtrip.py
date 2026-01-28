@@ -2,7 +2,7 @@ import torch
 
 from vagi_core import VAGIConfig, VAGICore
 
-from io.checkpoint import load_checkpoint, save_checkpoint
+from vagi_io.checkpoint import load_checkpoint, save_checkpoint
 
 
 def test_checkpoint_roundtrip(tmp_path) -> None:

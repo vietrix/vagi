@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["vagi_core", "train", "train.scripts", "io", "envs", "runtime"]
+packages = ["vagi_core", "train", "train.scripts", "vagi_io", "envs", "runtime"]
 package-dir = { "vagi_core" = "core" }
 
 [tool.pytest.ini_options]
