@@ -14,6 +14,7 @@ from vagi_core import VAGIConfig, VAGICore
 from train.scripts.collate import make_collate_fn
 from train.scripts.config import TrainConfig
 from train.scripts.dataset_text import TextDataset, build_tokenizer, load_texts
+from io.checkpoint import load_checkpoint, save_checkpoint
 from train.scripts.utils import get_lr, set_seed
 
 
@@ -27,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--save-every", type=int, default=50)
     parser.add_argument("--log-every", type=int, default=10)
+    parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-seq-len", type=int, default=64)
     parser.add_argument("--hidden-size", type=int, default=64)
@@ -105,6 +107,9 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     step = 0
+    if args.resume:
+        meta = load_checkpoint(model, optimizer=optimizer, ckpt_path=args.resume)
+        step = int(meta.get("step", 0))
     for epoch in range(cfg.epochs):
         for batch in loader:
             step += 1
@@ -126,8 +131,7 @@ def main() -> None:
                 print(f"step={step} loss={loss.item():.6f} lr={get_lr(optimizer):.6f}")
 
             if cfg.save_every and step % cfg.save_every == 0:
-                ckpt_path = out_dir / f"checkpoint_step_{step}.pt"
-                torch.save({"model": model.state_dict(), "step": step}, ckpt_path)
+                save_checkpoint(model, optimizer, step=step, out_dir=out_dir, extra={"epoch": epoch + 1})
 
             if cfg.max_steps is not None and step >= cfg.max_steps:
                 break
