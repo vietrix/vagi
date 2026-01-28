@@ -14,3 +14,5 @@ python -m pip install -e .
 pytest
 ```
 
+## Scripts
+Use the `scripts/` modules for training, evaluation, and toy environment runs.
