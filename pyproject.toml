@@ -19,8 +19,8 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["vagi_core", "scripts", "vagi_io", "envs", "runtime"]
-package-dir = { "vagi_core" = "core", "vagi_io" = "io" }
+packages = ["vagi_core", "scripts", "io", "envs", "runtime"]
+package-dir = { "vagi_core" = "core", "io" = "io" }
 
 [tool.pytest.ini_options]
 addopts = "-q"

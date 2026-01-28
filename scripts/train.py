@@ -14,7 +14,7 @@ from vagi_core import VAGIConfig, VAGICore
 from scripts.collate import make_collate_fn
 from scripts.config import TrainConfig
 from scripts.dataset_text import TextDataset, build_tokenizer, load_texts
-from vagi_io.checkpoint import load_checkpoint, save_checkpoint
+from io.checkpoint import load_checkpoint, save_checkpoint
 from scripts.utils import get_lr, set_seed
 
 
