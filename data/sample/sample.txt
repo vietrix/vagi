@@ -1,0 +1,5 @@
+hello world from vagi
+vagi core minimal training example
+this is a tiny dataset
+hello vagi core
+train and evaluate
