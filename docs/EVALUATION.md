@@ -48,6 +48,11 @@ This document describes the evaluation setup for vAGI and baseline agents.
 - Environment settings (obs_dim, max_steps, max_run_tests) are identical.
 
 ## Output format
+### results/run_<timestamp>/
+- `results.json`: config, summary, and per-episode records for vAGI + baselines.
+- `results.csv`: per-episode rows (task, seed, agent, success, steps, reward, latency).
+- `system_info.json`: CPU/GPU, torch version, and git commit hash.
+
 ### results/baselines.json
 - Aggregate metrics per agent and per-episode records.
 

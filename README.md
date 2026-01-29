@@ -28,6 +28,7 @@ state = out["state"]
 
 ```bash
 python -m scripts.run_all_benchmarks --deterministic
+python -m scripts.summarize_results --run-dir results/run_<timestamp>
 python -m scripts.bench_latency --steps 50
 python -m scripts.tune_inference --batch-sizes 1,2,4 --kv-cache-len 16
 ```
