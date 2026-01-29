@@ -22,6 +22,14 @@ This document describes the evaluation setup for vAGI and baseline agents.
 - Deterministic rule based on normalized observation features.
 - Cycles through planning and inspection before verifying.
 
+### LLM stub baseline
+- Offline fake LLM that maps observation features to an action type deterministically.
+- Used for local testing without network access.
+
+### LLM OpenAI baseline (optional)
+- Runs only when `OPENAI_API_KEY` is set.
+- Uses `OPENAI_MODEL` (default `gpt-4o-mini`) and `OPENAI_TEMPERATURE` (default `0.0`).
+
 ### vAGI baseline
 - Untrained vAGI model with argmax action selection.
 - Same environment limits and seeds as baselines.
@@ -52,7 +60,7 @@ This document describes the evaluation setup for vAGI and baseline agents.
   - `task`, `agent`, `episodes`, `pass_rate`, `mean_reward`, `mean_steps`, `mean_latency_s`.
 
 ## Limitations
-- No LLM-based baseline yet.
+- Optional LLM baseline depends on external API access and is not run in CI.
 - vAGI policy weights are untrained in this baseline suite.
 
 ## Seeds
