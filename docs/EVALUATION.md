@@ -39,6 +39,18 @@ This document describes the evaluation setup for vAGI and baseline agents.
 - Seeds are fixed and shared across agents for fairness.
 - Environment settings (obs_dim, max_steps, max_run_tests) are identical.
 
+## Output format
+### results/baselines.json
+- Aggregate metrics per agent and per-episode records.
+
+### results/baselines_per_task.json
+- Per-task aggregation by agent:
+  - `pass_rate`, `mean_reward`, `mean_steps`, `mean_latency_s`, `episodes`.
+
+### results/baselines.csv
+- Row per `(task, agent)` with columns:
+  - `task`, `agent`, `episodes`, `pass_rate`, `mean_reward`, `mean_steps`, `mean_latency_s`.
+
 ## Limitations
 - No LLM-based baseline yet.
 - vAGI policy weights are untrained in this baseline suite.

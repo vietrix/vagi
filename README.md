@@ -39,6 +39,8 @@ python -m scripts.eval_baselines --episodes 10 --tasks-dir envs/code_env/fixture
 ```
 
 Results are stored in `results/baselines.json`.
+Per-task summaries are stored in `results/baselines_per_task.json` and
+`results/baselines.csv`.
 
 ## Privacy
 
