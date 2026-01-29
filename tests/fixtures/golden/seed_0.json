@@ -1,0 +1,11 @@
+{
+  "seed": 0,
+  "episodes": 3,
+  "act_mean_reward": 4.333333333333333,
+  "think_mean_reward": 4.333333333333333,
+  "act_mean_steps": 12.0,
+  "think_mean_steps": 12.0,
+  "act_success_rate": 1.0,
+  "think_success_rate": 1.0,
+  "think_rate": 1.0
+}

@@ -15,7 +15,7 @@ from vagi_core import VAGIConfig, VAGICore
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate golden benchmark runs.")
-    parser.add_argument("--out-dir", type=str, default="results/golden")
+    parser.add_argument("--out-dir", type=str, default="tests/fixtures/golden")
     parser.add_argument("--seeds", type=str, default="0,1,2")
     parser.add_argument("--episodes", type=int, default=3)
     parser.add_argument("--steps", type=int, default=12)
