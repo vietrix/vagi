@@ -109,3 +109,25 @@ def drift_loss(values: torch.Tensor, max_delta: float = 1.0) -> torch.Tensor:
     deltas = torch.abs(values[:, 1:, :] - values[:, :-1, :])
     penalty = torch.relu(deltas - max_delta)
     return torch.mean(penalty ** 2)
+
+
+def representation_loss(
+    anchor: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    method: str = "mse",
+    temperature: float = 0.1,
+) -> torch.Tensor:
+    """Auxiliary loss to keep representations consistent."""
+    if method == "cosine":
+        anchor_norm = torch.nn.functional.normalize(anchor, dim=-1)
+        target_norm = torch.nn.functional.normalize(target, dim=-1)
+        similarity = (anchor_norm * target_norm).sum(dim=-1)
+        return torch.mean(1.0 - similarity)
+    if method == "contrastive":
+        anchor_norm = torch.nn.functional.normalize(anchor, dim=-1)
+        target_norm = torch.nn.functional.normalize(target, dim=-1)
+        logits = torch.matmul(anchor_norm, target_norm.transpose(0, 1)) / max(temperature, 1e-6)
+        labels = torch.arange(logits.shape[0], device=logits.device)
+        return torch.nn.functional.cross_entropy(logits, labels)
+    return F.mse_loss(anchor, target)

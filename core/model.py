@@ -83,6 +83,7 @@ class VAGICore(nn.Module):
         labels: Optional[torch.Tensor] = None,
         targets: Optional[Dict[str, Any]] = None,
         return_loss: bool = False,
+        return_hidden: bool = False,
     ) -> Dict[str, Any]:
         """Forward pass for full sequences."""
         if input_ids.dtype != torch.long:
@@ -127,6 +128,8 @@ class VAGICore(nn.Module):
             "world_logvar": world_logvar,
             "state": state_out,
         }
+        if return_hidden:
+            outputs["hidden"] = h_last
 
         if return_loss:
             losses: Dict[str, torch.Tensor] = {}
@@ -207,12 +210,22 @@ class VAGICore(nn.Module):
         num_candidates: int = 4,
         horizon: int = 3,
         uncertainty_weight: float = 1.0,
+        strategy: str = "cem",
+        cem_iters: int = 3,
+        elite_frac: float = 0.2,
+        tree_branching: int = 4,
     ) -> Dict[str, Any]:
         """Plan a single action by rolling out the world model and scoring with value."""
         if num_candidates <= 0:
             raise ValueError("num_candidates must be > 0")
         if horizon <= 0:
             raise ValueError("horizon must be > 0")
+        if cem_iters <= 0:
+            raise ValueError("cem_iters must be > 0")
+        if not (0.0 < elite_frac <= 1.0):
+            raise ValueError("elite_frac must be in (0, 1]")
+        if tree_branching <= 0:
+            raise ValueError("tree_branching must be > 0")
         if self.world is None:
             raise ValueError("world model is required for plan_step")
         if state is None:
@@ -222,48 +235,106 @@ class VAGICore(nn.Module):
 
         base = self.forward(input_ids=input_ids, obs=obs, state=state, return_loss=False)
         action_logits = base["action_logits"]
+
+        strategy_key = strategy.lower().strip()
+        if strategy_key == "sample":
+            return self._plan_sample(
+                action_logits=action_logits,
+                obs=obs,
+                state=state,
+                num_candidates=num_candidates,
+                horizon=horizon,
+                uncertainty_weight=uncertainty_weight,
+            )
+        if strategy_key == "tree":
+            return self._plan_tree(
+                action_logits=action_logits,
+                obs=obs,
+                state=state,
+                horizon=horizon,
+                uncertainty_weight=uncertainty_weight,
+                branch=tree_branching,
+            )
+        return self._plan_cem(
+            action_logits=action_logits,
+            obs=obs,
+            state=state,
+            num_candidates=num_candidates,
+            horizon=horizon,
+            uncertainty_weight=uncertainty_weight,
+            cem_iters=cem_iters,
+            elite_frac=elite_frac,
+        )
+
+    def _score_sequence(
+        self,
+        obs: torch.Tensor,
+        state: RecurrentState,
+        sequence: torch.Tensor,
+        *,
+        uncertainty_weight: float,
+    ) -> float:
+        obs_roll = obs
+        state_roll = state
+        value = None
+        uncertainty = 0.0
+        uncertainty_steps = 0
+        for action in sequence:
+            action_tensor = action.view(1, 1)
+            out = self.step(input_ids=action_tensor, obs=obs_roll, state=state_roll)
+            world_pred = out["world_pred"]
+            world_logvar = out.get("world_logvar")
+            value_logvar = out.get("value_logvar")
+            if world_pred is None:
+                break
+            if world_pred.ndim == 3:
+                obs_roll = world_pred[:, 0, :]
+            else:
+                obs_roll = world_pred
+            if world_logvar is not None:
+                if world_logvar.ndim == 3:
+                    step_uncert = torch.exp(world_logvar[:, 0, :]).mean()
+                else:
+                    step_uncert = torch.exp(world_logvar).mean()
+                uncertainty += float(step_uncert.item())
+                uncertainty_steps += 1
+            if value_logvar is not None:
+                uncertainty += float(torch.exp(value_logvar).mean().item())
+                uncertainty_steps += 1
+            state_roll = out["state"]
+            value = out["value"]
+        if value is None:
+            return -1e9
+        score = float(value.squeeze().item())
+        if uncertainty_steps > 0:
+            score -= uncertainty_weight * (uncertainty / uncertainty_steps)
+        return score
+
+    def _plan_sample(
+        self,
+        *,
+        action_logits: torch.Tensor,
+        obs: torch.Tensor,
+        state: RecurrentState,
+        num_candidates: int,
+        horizon: int,
+        uncertainty_weight: float,
+    ) -> Dict[str, Any]:
         probs = torch.softmax(action_logits, dim=-1)
         candidates = torch.multinomial(probs, num_samples=num_candidates, replacement=True)
-
         batch = obs.shape[0]
         candidate_values = torch.full((batch, num_candidates), -1e9, device=obs.device, dtype=obs.dtype)
         for b in range(batch):
+            state_roll = self._slice_state(state, b)
             for c in range(num_candidates):
                 action = candidates[b, c].view(1, 1)
-                obs_roll = obs[b : b + 1]
-                state_roll = self._slice_state(state, b)
-                value = None
-                uncertainty = 0.0
-                uncertainty_steps = 0
-                for _ in range(horizon):
-                    out = self.step(input_ids=action, obs=obs_roll, state=state_roll)
-                    world_pred = out["world_pred"]
-                    world_logvar = out.get("world_logvar")
-                    value_logvar = out.get("value_logvar")
-                    if world_pred is None:
-                        break
-                    if world_pred.ndim == 3:
-                        obs_roll = world_pred[:, 0, :]
-                    else:
-                        obs_roll = world_pred
-                    if world_logvar is not None:
-                        if world_logvar.ndim == 3:
-                            step_uncert = torch.exp(world_logvar[:, 0, :]).mean()
-                        else:
-                            step_uncert = torch.exp(world_logvar).mean()
-                        uncertainty += float(step_uncert.item())
-                        uncertainty_steps += 1
-                    if value_logvar is not None:
-                        uncertainty += float(torch.exp(value_logvar).mean().item())
-                        uncertainty_steps += 1
-                    state_roll = out["state"]
-                    value = out["value"]
-                if value is not None:
-                    score = value.squeeze()
-                    if uncertainty_steps > 0:
-                        score = score - uncertainty_weight * (uncertainty / uncertainty_steps)
-                    candidate_values[b, c] = score
-
+                score = self._score_sequence(
+                    obs[b : b + 1],
+                    state_roll.clone(),
+                    action.view(1),
+                    uncertainty_weight=uncertainty_weight,
+                )
+                candidate_values[b, c] = score
         best_idx = torch.argmax(candidate_values, dim=-1)
         best_actions = candidates.gather(1, best_idx.unsqueeze(-1)).squeeze(-1)
         return {
@@ -272,6 +343,164 @@ class VAGICore(nn.Module):
             "candidate_actions": candidates,
             "candidate_values": candidate_values,
         }
+
+    def _plan_cem(
+        self,
+        *,
+        action_logits: torch.Tensor,
+        obs: torch.Tensor,
+        state: RecurrentState,
+        num_candidates: int,
+        horizon: int,
+        uncertainty_weight: float,
+        cem_iters: int,
+        elite_frac: float,
+    ) -> Dict[str, Any]:
+        batch = obs.shape[0]
+        action_dim = action_logits.shape[-1]
+        best_actions = torch.zeros(batch, dtype=torch.long, device=obs.device)
+        candidate_values = torch.zeros(batch, num_candidates, device=obs.device, dtype=obs.dtype)
+        candidates_out = torch.zeros(batch, num_candidates, horizon, dtype=torch.long, device=obs.device)
+
+        for b in range(batch):
+            probs = torch.full((horizon, action_dim), 1.0 / action_dim, device=obs.device, dtype=obs.dtype)
+            probs[0] = torch.softmax(action_logits[b], dim=-1)
+            state_roll = self._slice_state(state, b)
+            for _ in range(cem_iters):
+                sequences = []
+                for t in range(horizon):
+                    seq_actions = torch.multinomial(probs[t], num_samples=num_candidates, replacement=True)
+                    sequences.append(seq_actions)
+                sequences_tensor = torch.stack(sequences, dim=1)
+                scores = torch.tensor(
+                    [
+                        self._score_sequence(
+                            obs[b : b + 1],
+                            state_roll.clone(),
+                            sequences_tensor[idx],
+                            uncertainty_weight=uncertainty_weight,
+                        )
+                        for idx in range(num_candidates)
+                    ],
+                    device=obs.device,
+                    dtype=obs.dtype,
+                )
+                elite_count = max(1, int(num_candidates * elite_frac))
+                elite_idx = torch.topk(scores, k=elite_count).indices
+                elite = sequences_tensor[elite_idx]
+                for t in range(horizon):
+                    counts = torch.bincount(elite[:, t], minlength=action_dim).float()
+                    probs[t] = (counts / counts.sum()).clamp_min(1e-6)
+                candidate_values[b] = scores
+                candidates_out[b] = sequences_tensor
+
+            best_idx = torch.argmax(candidate_values[b], dim=-1)
+            best_actions[b] = candidates_out[b, best_idx, 0]
+
+        return {
+            "action": best_actions,
+            "action_logits": action_logits,
+            "candidate_actions": candidates_out,
+            "candidate_values": candidate_values,
+        }
+
+    def _plan_tree(
+        self,
+        *,
+        action_logits: torch.Tensor,
+        obs: torch.Tensor,
+        state: RecurrentState,
+        horizon: int,
+        uncertainty_weight: float,
+        branch: int,
+    ) -> Dict[str, Any]:
+        batch = obs.shape[0]
+        action_dim = action_logits.shape[-1]
+        branch = min(branch, action_dim)
+        best_actions = torch.zeros(batch, dtype=torch.long, device=obs.device)
+        candidate_values = torch.full((batch, branch), -1e9, device=obs.device, dtype=obs.dtype)
+        candidates = torch.zeros(batch, branch, dtype=torch.long, device=obs.device)
+
+        for b in range(batch):
+            root_logits = action_logits[b]
+            topk = torch.topk(root_logits, k=branch)
+            candidates[b] = topk.indices
+            for idx, action in enumerate(topk.indices):
+                score = self._tree_rollout(
+                    obs[b : b + 1],
+                    self._slice_state(state, b),
+                    action.view(1),
+                    depth=horizon,
+                    branch=branch,
+                    uncertainty_weight=uncertainty_weight,
+                )
+                candidate_values[b, idx] = score
+            best_idx = torch.argmax(candidate_values[b], dim=-1)
+            best_actions[b] = candidates[b, best_idx]
+
+        return {
+            "action": best_actions,
+            "action_logits": action_logits,
+            "candidate_actions": candidates,
+            "candidate_values": candidate_values,
+        }
+
+    def _tree_rollout(
+        self,
+        obs: torch.Tensor,
+        state: RecurrentState,
+        action: torch.Tensor,
+        *,
+        depth: int,
+        branch: int,
+        uncertainty_weight: float,
+    ) -> float:
+        action_tensor = action.view(1, 1)
+        out = self.step(input_ids=action_tensor, obs=obs, state=state)
+        world_pred = out["world_pred"]
+        world_logvar = out.get("world_logvar")
+        value_logvar = out.get("value_logvar")
+        value = out["value"]
+
+        uncertainty = 0.0
+        uncertainty_steps = 0
+        if world_logvar is not None:
+            if world_logvar.ndim == 3:
+                uncertainty += float(torch.exp(world_logvar[:, 0, :]).mean().item())
+            else:
+                uncertainty += float(torch.exp(world_logvar).mean().item())
+            uncertainty_steps += 1
+        if value_logvar is not None:
+            uncertainty += float(torch.exp(value_logvar).mean().item())
+            uncertainty_steps += 1
+
+        if depth <= 1 or world_pred is None:
+            score = float(value.squeeze().item())
+            if uncertainty_steps > 0:
+                score -= uncertainty_weight * (uncertainty / uncertainty_steps)
+            return score
+
+        if world_pred.ndim == 3:
+            obs_next = world_pred[:, 0, :]
+        else:
+            obs_next = world_pred
+
+        next_logits = out["action_logits"].squeeze(0)
+        branch = min(branch, next_logits.shape[-1])
+        topk = torch.topk(next_logits, k=branch)
+        best_score = -1e9
+        for next_action in topk.indices:
+            score = self._tree_rollout(
+                obs_next,
+                out["state"],
+                next_action.view(1),
+                depth=depth - 1,
+                branch=branch,
+                uncertainty_weight=uncertainty_weight,
+            )
+            if score > best_score:
+                best_score = score
+        return best_score
 
     @staticmethod
     def _slice_state(state: RecurrentState, index: int) -> RecurrentState:

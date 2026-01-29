@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 import torch
+from torch.utils.checkpoint import checkpoint
 from torch import nn
 from torch.nn import functional as F
 
@@ -288,7 +289,10 @@ class CausalTransformerBackbone(nn.Module):
 
         x = self._add_positions(x, start_pos=0)
         for block in self.blocks:
-            x = block(x)
+            if self.cfg.use_grad_checkpoint and self.training:
+                x = checkpoint(block, x)
+            else:
+                x = block(x)
 
         h_last = x[:, -1, :]
         h_act = x[:, act_index, :] if act_index is not None else None

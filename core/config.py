@@ -24,6 +24,7 @@ class VAGIConfig:
     use_rotary: bool = False
     use_gqa: bool = False
     use_flash_attn: bool = False
+    use_grad_checkpoint: bool = False
     use_world_pred: bool = False
     world_model_horizon: int = 1
     use_confidence: bool = False
