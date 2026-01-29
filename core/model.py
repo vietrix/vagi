@@ -9,7 +9,7 @@ from torch import nn
 
 from .backbone import CausalTransformerBackbone
 from .config import VAGIConfig
-from .heads import LanguageHead, PolicyHead, ValueHead, WorldHead
+from .heads import ConfidenceHead, LanguageHead, PolicyHead, ValueHead, WorldHead
 from .losses import language_loss, policy_loss, total_loss, value_loss, world_loss
 from .memory import KVCache, RecurrentState
 from .utils import check_floating, check_shape
@@ -25,9 +25,15 @@ class VAGICore(nn.Module):
         self.lang = LanguageHead(cfg.hidden_size, cfg.vocab_size)
         self.pi = PolicyHead(cfg.hidden_size, cfg.action_dim)
         self.v = ValueHead(cfg.hidden_size)
+        self.value_conf = ConfidenceHead(cfg.hidden_size, 1) if cfg.use_confidence else None
         self.world = (
             WorldHead(cfg.hidden_size, cfg.obs_dim, horizon=cfg.world_model_horizon)
             if cfg.use_world_pred
+            else None
+        )
+        self.world_conf = (
+            ConfidenceHead(cfg.hidden_size, cfg.world_model_horizon)
+            if cfg.use_confidence and cfg.use_world_pred
             else None
         )
 
@@ -98,7 +104,9 @@ class VAGICore(nn.Module):
         h_policy = h_act if h_act is not None else h_last
         action_logits = self.pi(h_policy)
         value = self.v(h_policy)
+        value_conf = self.value_conf(h_policy) if self.value_conf is not None else None
         world_pred = self.world(h_last) if self.world is not None else None
+        world_conf = self.world_conf(h_last) if self.world_conf is not None else None
 
         state_out = None
         if state is not None:
@@ -112,7 +120,9 @@ class VAGICore(nn.Module):
             "text_logits": text_logits,
             "action_logits": action_logits,
             "value": value,
+            "value_conf": value_conf,
             "world_pred": world_pred,
+            "world_conf": world_conf,
             "state": state_out,
         }
 
@@ -162,7 +172,9 @@ class VAGICore(nn.Module):
             "text_logits": self.lang(x),
             "action_logits": self.pi(h_policy),
             "value": self.v(h_policy),
+            "value_conf": self.value_conf(h_policy) if self.value_conf is not None else None,
             "world_pred": self.world(h_last) if self.world is not None else None,
+            "world_conf": self.world_conf(h_last) if self.world_conf is not None else None,
             "state": None,
         }
         if outputs["state"] is not None:
@@ -188,6 +200,7 @@ class VAGICore(nn.Module):
         state: RecurrentState,
         num_candidates: int = 4,
         horizon: int = 3,
+        confidence_weight: float = 1.0,
     ) -> Dict[str, Any]:
         """Plan a single action by rolling out the world model and scoring with value."""
         if num_candidates <= 0:
@@ -214,19 +227,29 @@ class VAGICore(nn.Module):
                 obs_roll = obs[b : b + 1]
                 state_roll = self._slice_state(state, b)
                 value = None
+                conf_score = None
                 for _ in range(horizon):
                     out = self.step(input_ids=action, obs=obs_roll, state=state_roll)
                     world_pred = out["world_pred"]
+                    world_conf = out.get("world_conf")
                     if world_pred is None:
                         break
                     if world_pred.ndim == 3:
                         obs_roll = world_pred[:, 0, :]
                     else:
                         obs_roll = world_pred
+                    if world_conf is not None:
+                        if world_conf.ndim == 2:
+                            conf_score = world_conf.mean()
+                        else:
+                            conf_score = world_conf.mean()
                     state_roll = out["state"]
                     value = out["value"]
                 if value is not None:
-                    candidate_values[b, c] = value.squeeze()
+                    score = value.squeeze()
+                    if conf_score is not None:
+                        score = score - confidence_weight * (1.0 - conf_score)
+                    candidate_values[b, c] = score
 
         best_idx = torch.argmax(candidate_values, dim=-1)
         best_actions = candidates.gather(1, best_idx.unsqueeze(-1)).squeeze(-1)

@@ -62,3 +62,18 @@ def total_loss(losses: Dict[str, torch.Tensor], weights: Optional[Dict[str, floa
     if total is None:
         raise ValueError("No losses to combine")
     return total
+
+
+def consistency_loss(values: torch.Tensor, anchor: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """Penalize drift of predicted values across imagined steps."""
+    if values.ndim == 2:
+        values = values.unsqueeze(-1)
+    if values.ndim != 3:
+        raise ValueError("values must have shape (B, K, 1) or (B, K)")
+    if anchor is None:
+        anchor = values[:, 0:1, :]
+    if anchor.ndim == 2:
+        anchor = anchor.unsqueeze(1)
+    if anchor.shape[0] != values.shape[0]:
+        raise ValueError("anchor batch size mismatch")
+    return F.mse_loss(values, anchor.expand_as(values))

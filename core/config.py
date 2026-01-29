@@ -26,6 +26,7 @@ class VAGIConfig:
     use_flash_attn: bool = False
     use_world_pred: bool = False
     world_model_horizon: int = 1
+    use_confidence: bool = False
     use_special_tokens: bool = True
 
     def __post_init__(self) -> None:

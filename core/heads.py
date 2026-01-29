@@ -39,6 +39,17 @@ class ValueHead(nn.Module):
         return self.proj(h_last)
 
 
+class ConfidenceHead(nn.Module):
+    """Predict a confidence value in [0, 1]."""
+
+    def __init__(self, hidden_size: int, out_dim: int = 1) -> None:
+        super().__init__()
+        self.proj = nn.Linear(hidden_size, out_dim)
+
+    def forward(self, h_last: torch.Tensor) -> torch.Tensor:
+        return torch.sigmoid(self.proj(h_last))
+
+
 class WorldHead(nn.Module):
     """Project a pooled hidden state to multi-step observation prediction."""
 

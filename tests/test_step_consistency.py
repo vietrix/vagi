@@ -27,7 +27,15 @@ def test_step_consistency() -> None:
     state = model.init_state(bsz)
     for step_idx in range(5):
         out = model.step(input_ids=token, obs=obs, state=state)
-        assert set(out.keys()) == {"text_logits", "action_logits", "value", "world_pred", "state"}
+        assert set(out.keys()) == {
+            "text_logits",
+            "action_logits",
+            "value",
+            "value_conf",
+            "world_pred",
+            "world_conf",
+            "state",
+        }
         assert out["state"] is not None
         assert out["state"].timestep == step_idx + 1
         assert out["state"].mem.shape == (bsz, cfg.memory_slots, cfg.hidden_size)
