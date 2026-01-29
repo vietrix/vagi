@@ -58,6 +58,15 @@ class KVCache:
             self.values = [v.to(device) if v is not None else None for v in self.values]
         return self
 
+    def clone(self) -> "KVCache":
+        keys = None
+        values = None
+        if self.keys is not None:
+            keys = [k.clone() if k is not None else None for k in self.keys]
+        if self.values is not None:
+            values = [v.clone() if v is not None else None for v in self.values]
+        return KVCache(keys=keys, values=values, max_len=self.max_len)
+
 
 @dataclass
 class RecurrentState:
@@ -69,3 +78,6 @@ class RecurrentState:
 
     def to(self, device: torch.device | str) -> "RecurrentState":
         return RecurrentState(mem=self.mem.to(device), kv=self.kv.to(device), timestep=self.timestep)
+
+    def clone(self) -> "RecurrentState":
+        return RecurrentState(mem=self.mem.clone(), kv=self.kv.clone(), timestep=self.timestep)

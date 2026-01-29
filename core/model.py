@@ -25,7 +25,11 @@ class VAGICore(nn.Module):
         self.lang = LanguageHead(cfg.hidden_size, cfg.vocab_size)
         self.pi = PolicyHead(cfg.hidden_size, cfg.action_dim)
         self.v = ValueHead(cfg.hidden_size)
-        self.world = WorldHead(cfg.hidden_size, cfg.obs_dim) if cfg.use_world_pred else None
+        self.world = (
+            WorldHead(cfg.hidden_size, cfg.obs_dim, horizon=cfg.world_model_horizon)
+            if cfg.use_world_pred
+            else None
+        )
 
     def init_state(
         self,
@@ -126,8 +130,11 @@ class VAGICore(nn.Module):
                 losses["policy"] = policy_loss(action_logits, targets["actions"])
             if "values" in targets:
                 losses["value"] = value_loss(value, targets["values"])
-            if "obs_next" in targets and world_pred is not None:
-                losses["world"] = world_loss(world_pred, targets["obs_next"])
+            if world_pred is not None:
+                if "obs_future" in targets:
+                    losses["world"] = world_loss(world_pred, targets["obs_future"])
+                elif "obs_next" in targets:
+                    losses["world"] = world_loss(world_pred, targets["obs_next"])
 
             if losses:
                 outputs["loss"] = total_loss(losses, weights=targets.get("loss_weights"))
@@ -172,3 +179,72 @@ class VAGICore(nn.Module):
                 timestep=state.timestep + 1,
             )
         return outputs
+
+    @torch.no_grad()
+    def plan_step(
+        self,
+        input_ids: torch.Tensor,
+        obs: torch.Tensor,
+        state: RecurrentState,
+        num_candidates: int = 4,
+        horizon: int = 3,
+    ) -> Dict[str, Any]:
+        """Plan a single action by rolling out the world model and scoring with value."""
+        if num_candidates <= 0:
+            raise ValueError("num_candidates must be > 0")
+        if horizon <= 0:
+            raise ValueError("horizon must be > 0")
+        if self.world is None:
+            raise ValueError("world model is required for plan_step")
+        if state is None:
+            raise ValueError("state is required for plan_step")
+        if obs is None:
+            raise ValueError("obs is required for plan_step")
+
+        base = self.forward(input_ids=input_ids, obs=obs, state=state, return_loss=False)
+        action_logits = base["action_logits"]
+        probs = torch.softmax(action_logits, dim=-1)
+        candidates = torch.multinomial(probs, num_samples=num_candidates, replacement=True)
+
+        batch = obs.shape[0]
+        candidate_values = torch.full((batch, num_candidates), -1e9, device=obs.device, dtype=obs.dtype)
+        for b in range(batch):
+            for c in range(num_candidates):
+                action = candidates[b, c].view(1, 1)
+                obs_roll = obs[b : b + 1]
+                state_roll = self._slice_state(state, b)
+                value = None
+                for _ in range(horizon):
+                    out = self.step(input_ids=action, obs=obs_roll, state=state_roll)
+                    world_pred = out["world_pred"]
+                    if world_pred is None:
+                        break
+                    if world_pred.ndim == 3:
+                        obs_roll = world_pred[:, 0, :]
+                    else:
+                        obs_roll = world_pred
+                    state_roll = out["state"]
+                    value = out["value"]
+                if value is not None:
+                    candidate_values[b, c] = value.squeeze()
+
+        best_idx = torch.argmax(candidate_values, dim=-1)
+        best_actions = candidates.gather(1, best_idx.unsqueeze(-1)).squeeze(-1)
+        return {
+            "action": best_actions,
+            "action_logits": action_logits,
+            "candidate_actions": candidates,
+            "candidate_values": candidate_values,
+        }
+
+    @staticmethod
+    def _slice_state(state: RecurrentState, index: int) -> RecurrentState:
+        mem = state.mem[index : index + 1].clone()
+        keys = None
+        values = None
+        if state.kv.keys is not None:
+            keys = [k[index : index + 1].clone() if k is not None else None for k in state.kv.keys]
+        if state.kv.values is not None:
+            values = [v[index : index + 1].clone() if v is not None else None for v in state.kv.values]
+        kv = KVCache(keys=keys, values=values, max_len=state.kv.max_len)
+        return RecurrentState(mem=mem, kv=kv, timestep=state.timestep)

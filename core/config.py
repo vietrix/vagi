@@ -25,6 +25,7 @@ class VAGIConfig:
     use_gqa: bool = False
     use_flash_attn: bool = False
     use_world_pred: bool = False
+    world_model_horizon: int = 1
     use_special_tokens: bool = True
 
     def __post_init__(self) -> None:
@@ -61,5 +62,7 @@ class VAGIConfig:
             raise ValueError("action_dim must be > 0")
         if self.memory_slots < 0:
             raise ValueError("memory_slots must be >= 0")
+        if self.world_model_horizon <= 0:
+            raise ValueError("world_model_horizon must be > 0")
         if not (0.0 <= self.dropout < 1.0):
             raise ValueError("dropout must be in [0, 1)")

@@ -105,6 +105,8 @@ def main() -> None:
                 )
                 world_pred = imagined["world_pred"]
                 if world_pred is not None:
+                    if world_pred.ndim == 3:
+                        world_pred = world_pred[:, 0, :]
                     value_imagined = model.forward(
                         input_ids=torch.zeros((1, 1), dtype=torch.long),
                         obs=world_pred.detach(),

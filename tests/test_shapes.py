@@ -37,7 +37,7 @@ def test_shapes_with_obs() -> None:
     assert out["action_logits"].shape == (bsz, cfg.action_dim)
     assert out["value"].shape == (bsz, 1)
     assert out["world_pred"] is not None
-    assert out["world_pred"].shape == (bsz, cfg.obs_dim)
+    assert out["world_pred"].shape == (bsz, cfg.world_model_horizon, cfg.obs_dim)
     assert out["state"] is not None
     assert out["state"].mem.shape == (bsz, cfg.memory_slots, cfg.hidden_size)
 
@@ -56,6 +56,6 @@ def test_shapes_no_obs() -> None:
     assert out["action_logits"].shape == (bsz, cfg.action_dim)
     assert out["value"].shape == (bsz, 1)
     assert out["world_pred"] is not None
-    assert out["world_pred"].shape == (bsz, cfg.obs_dim)
+    assert out["world_pred"].shape == (bsz, cfg.world_model_horizon, cfg.obs_dim)
     assert out["state"] is not None
     assert out["state"].mem.shape == (bsz, cfg.memory_slots, cfg.hidden_size)

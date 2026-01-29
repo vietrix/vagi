@@ -46,6 +46,10 @@ def value_loss(value: torch.Tensor, value_targets: torch.Tensor) -> torch.Tensor
 
 
 def world_loss(world_pred: torch.Tensor, obs_next: torch.Tensor) -> torch.Tensor:
+    if world_pred.ndim == 3 and obs_next.ndim == 2:
+        return F.mse_loss(world_pred[:, 0, :], obs_next)
+    if world_pred.ndim == 3 and obs_next.ndim == 3:
+        return F.mse_loss(world_pred, obs_next)
     return F.mse_loss(world_pred, obs_next)
 
 

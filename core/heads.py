@@ -40,11 +40,16 @@ class ValueHead(nn.Module):
 
 
 class WorldHead(nn.Module):
-    """Project a pooled hidden state to next observation prediction."""
+    """Project a pooled hidden state to multi-step observation prediction."""
 
-    def __init__(self, hidden_size: int, obs_dim: int) -> None:
+    def __init__(self, hidden_size: int, obs_dim: int, horizon: int = 1) -> None:
         super().__init__()
-        self.proj = nn.Linear(hidden_size, obs_dim)
+        if horizon <= 0:
+            raise ValueError("horizon must be > 0")
+        self.obs_dim = obs_dim
+        self.horizon = horizon
+        self.proj = nn.Linear(hidden_size, obs_dim * horizon)
 
     def forward(self, h_last: torch.Tensor) -> torch.Tensor:
-        return self.proj(h_last)
+        out = self.proj(h_last)
+        return out.view(h_last.shape[0], self.horizon, self.obs_dim)

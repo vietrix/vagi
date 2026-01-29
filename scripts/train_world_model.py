@@ -16,8 +16,9 @@ from scripts.utils import set_deterministic
 
 
 class WorldDataset(Dataset):
-    def __init__(self, records: List[Dict[str, object]]) -> None:
+    def __init__(self, records: List[Dict[str, object]], horizon: int) -> None:
         self.records = records
+        self.horizon = horizon
 
     def __len__(self) -> int:
         return len(self.records)
@@ -25,12 +26,12 @@ class WorldDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         record = self.records[idx]
         obs = torch.tensor(record["obs"], dtype=torch.float32)
-        obs_next = torch.tensor(record["obs_next"], dtype=torch.float32)
+        obs_future = torch.tensor(record["obs_future"], dtype=torch.float32)
         action = parse_action(str(record["action"]))
         action_id = action_type_id(action)
         return {
             "obs": obs,
-            "obs_next": obs_next,
+            "obs_future": obs_future,
             "action_id": torch.tensor(action_id, dtype=torch.long),
         }
 
@@ -49,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--obs-tokens", type=int, default=2)
     parser.add_argument("--memory-slots", type=int, default=4)
+    parser.add_argument("--horizon", type=int, default=1)
     return parser.parse_args()
 
 
@@ -64,6 +66,36 @@ def _load_records(path: str | Path) -> List[Dict[str, object]]:
     return records
 
 
+def _attach_future_obs(records: List[Dict[str, object]], horizon: int) -> List[Dict[str, object]]:
+    if horizon <= 0:
+        raise ValueError("horizon must be > 0")
+    enriched: List[Dict[str, object]] = []
+    episode: List[Dict[str, object]] = []
+    for record in records:
+        episode.append(record)
+        if record.get("done", False):
+            enriched.extend(_augment_episode(episode, horizon))
+            episode = []
+    if episode:
+        enriched.extend(_augment_episode(episode, horizon))
+    return enriched
+
+
+def _augment_episode(episode: List[Dict[str, object]], horizon: int) -> List[Dict[str, object]]:
+    out: List[Dict[str, object]] = []
+    length = len(episode)
+    for idx in range(length):
+        if idx + horizon > length:
+            break
+        future = []
+        for step in range(horizon):
+            future.append(episode[idx + step]["obs_next"])
+        item = dict(episode[idx])
+        item["obs_future"] = future
+        out.append(item)
+    return out
+
+
 def main() -> None:
     args = parse_args()
     set_deterministic(args.seed, args.deterministic)
@@ -71,9 +103,10 @@ def main() -> None:
     records = _load_records(args.data)
     if not records:
         raise ValueError("No rollout records found.")
+    records = _attach_future_obs(records, args.horizon)
     obs_dim = len(records[0]["obs"])
 
-    dataset = WorldDataset(records)
+    dataset = WorldDataset(records, horizon=args.horizon)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
     cfg = VAGIConfig(
@@ -90,6 +123,7 @@ def main() -> None:
         memory_slots=args.memory_slots,
         dropout=0.0,
         use_world_pred=True,
+        world_model_horizon=args.horizon,
     )
     model = VAGICore(cfg)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -103,7 +137,7 @@ def main() -> None:
         total = 0
         for batch in loader:
             obs = batch["obs"]
-            obs_next = batch["obs_next"]
+            obs_future = batch["obs_future"]
             action_ids = batch["action_id"]
             input_ids = action_ids.unsqueeze(-1)
             state = model.init_state(batch_size=obs.shape[0])
@@ -112,7 +146,7 @@ def main() -> None:
                 input_ids=input_ids,
                 obs=obs,
                 state=state,
-                targets={"obs_next": obs_next},
+                targets={"obs_future": obs_future},
                 return_loss=True,
             )
             loss = out["loss"]
