@@ -10,7 +10,7 @@ import platform
 import random
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -100,7 +100,7 @@ def _system_info(repo_root: Path) -> Dict[str, object]:
         for idx in range(torch.cuda.device_count()):
             gpus.append(torch.cuda.get_device_name(idx))
     return {
-        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "platform": platform.platform(),
         "python_version": platform.python_version(),
         "cpu_count": os_cpu_count(),
@@ -204,7 +204,7 @@ def main() -> None:
     tasks_dir = Path(args.tasks_dir)
     out_root = Path(args.out_dir)
     out_root.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = out_root / f"run_{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
