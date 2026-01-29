@@ -32,6 +32,14 @@ python -m scripts.bench_latency --steps 50
 python -m scripts.tune_inference --batch-sizes 1,2,4 --kv-cache-len 16
 ```
 
+## Baseline evaluation
+
+```bash
+python -m scripts.eval_baselines --episodes 10 --tasks-dir envs/code_env/fixtures/benchmarks
+```
+
+Results are stored in `results/baselines.json`.
+
 ## Privacy
 
 Logs and rollouts are scrubbed for common PII patterns by default. See

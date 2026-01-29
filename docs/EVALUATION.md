@@ -1,6 +1,6 @@
 # EVALUATION
 
-This document describes the minimal evaluation setup for vAGI.
+This document describes the evaluation setup for vAGI and baseline agents.
 
 ## Benchmarks
 ### CodeEnv regression tasks
@@ -11,12 +11,37 @@ This document describes the minimal evaluation setup for vAGI.
 ### Runner
 - Single run: `python -m scripts.bench_code_env`
 - Multi-seed reproducibility: `python -m scripts.run_all_benchmarks`
+- Baselines: `python -m scripts.eval_baselines`
+
+## Baselines
+### Random baseline
+- Chooses actions uniformly from the action space.
+- Uses fixed valid arguments for file operations.
+
+### Heuristic baseline
+- Deterministic rule based on normalized observation features.
+- Cycles through planning and inspection before verifying.
+
+### vAGI baseline
+- Untrained vAGI model with argmax action selection.
+- Same environment limits and seeds as baselines.
 
 ## Metrics
 - `pass_rate`: fraction of tasks with zero failing tests.
 - `avg_steps`: mean action steps per task.
 - `avg_runs`: mean `run_tests` invocations.
 - `avg_time`: mean wall time per task.
+- `mean_reward`: mean episode reward (baseline evaluator).
+- `mean_latency_s`: wall-clock time per episode (baseline evaluator).
+
+## Protocol
+- Default episodes: 10.
+- Seeds are fixed and shared across agents for fairness.
+- Environment settings (obs_dim, max_steps, max_run_tests) are identical.
+
+## Limitations
+- No LLM-based baseline yet.
+- vAGI policy weights are untrained in this baseline suite.
 
 ## Seeds
 - Default seeds are `0..9` in `scripts/run_all_benchmarks.py`.
