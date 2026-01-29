@@ -36,6 +36,9 @@ def test_step_consistency() -> None:
             "world_logvar",
             "error_logits",
             "info_gain",
+            "budget_mode_logits",
+            "budget_horizon_logits",
+            "budget_candidate_logits",
             "state",
         }
         assert out["state"] is not None

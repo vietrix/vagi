@@ -149,3 +149,21 @@ def reflection_loss(
     if info_gain is not None and info_targets is not None:
         losses["info_gain"] = F.mse_loss(info_gain, info_targets)
     return losses
+
+
+def budget_loss(
+    mode_logits: Optional[torch.Tensor],
+    horizon_logits: Optional[torch.Tensor],
+    candidate_logits: Optional[torch.Tensor],
+    targets: Optional[Dict[str, torch.Tensor]],
+) -> Dict[str, torch.Tensor]:
+    losses: Dict[str, torch.Tensor] = {}
+    if targets is None:
+        return losses
+    if mode_logits is not None and "budget_mode" in targets:
+        losses["budget_mode"] = F.cross_entropy(mode_logits, targets["budget_mode"])
+    if horizon_logits is not None and "budget_horizon" in targets:
+        losses["budget_horizon"] = F.cross_entropy(horizon_logits, targets["budget_horizon"])
+    if candidate_logits is not None and "budget_candidates" in targets:
+        losses["budget_candidates"] = F.cross_entropy(candidate_logits, targets["budget_candidates"])
+    return losses

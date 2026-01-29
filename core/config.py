@@ -29,6 +29,9 @@ class VAGIConfig:
     task_vocab_size: int = 1
     use_reflection: bool = False
     error_type_dim: int = 4
+    use_budget_head: bool = False
+    budget_max_horizon: int = 4
+    budget_max_candidates: int = 8
     use_world_pred: bool = False
     world_model_horizon: int = 1
     use_confidence: bool = False
@@ -81,6 +84,10 @@ class VAGIConfig:
             raise ValueError("task_vocab_size must be > 0")
         if self.error_type_dim <= 0:
             raise ValueError("error_type_dim must be > 0")
+        if self.budget_max_horizon <= 0:
+            raise ValueError("budget_max_horizon must be > 0")
+        if self.budget_max_candidates <= 0:
+            raise ValueError("budget_max_candidates must be > 0")
         if not (0.0 <= self.memory_decay <= 1.0):
             raise ValueError("memory_decay must be in [0, 1]")
         if self.memory_consolidate_every < 0:

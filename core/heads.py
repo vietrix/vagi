@@ -97,3 +97,16 @@ class InfoGainHead(nn.Module):
 
     def forward(self, h_last: torch.Tensor) -> torch.Tensor:
         return torch.sigmoid(self.proj(h_last))
+
+
+class BudgetHead(nn.Module):
+    """Predict compute budget decisions."""
+
+    def __init__(self, hidden_size: int, max_horizon: int, max_candidates: int) -> None:
+        super().__init__()
+        self.mode = nn.Linear(hidden_size, 2)
+        self.horizon = nn.Linear(hidden_size, max_horizon)
+        self.candidates = nn.Linear(hidden_size, max_candidates)
+
+    def forward(self, h_last: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self.mode(h_last), self.horizon(h_last), self.candidates(h_last)

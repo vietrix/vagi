@@ -9,8 +9,17 @@ from torch import nn
 
 from .backbone import CausalTransformerBackbone
 from .config import VAGIConfig
-from .heads import ErrorTypeHead, InfoGainHead, LanguageHead, LogVarHead, PolicyHead, ValueHead, WorldHead
-from .losses import language_loss, policy_loss, reflection_loss, total_loss, value_loss, world_loss
+from .heads import (
+    BudgetHead,
+    ErrorTypeHead,
+    InfoGainHead,
+    LanguageHead,
+    LogVarHead,
+    PolicyHead,
+    ValueHead,
+    WorldHead,
+)
+from .losses import budget_loss, language_loss, policy_loss, reflection_loss, total_loss, value_loss, world_loss
 from .memory import KVCache, RecurrentState
 from .utils import check_floating, check_shape
 
@@ -28,6 +37,11 @@ class VAGICore(nn.Module):
         self.value_logvar = LogVarHead(cfg.hidden_size, 1) if cfg.use_uncertainty else None
         self.error_head = ErrorTypeHead(cfg.hidden_size, cfg.error_type_dim) if cfg.use_reflection else None
         self.info_head = InfoGainHead(cfg.hidden_size) if cfg.use_reflection else None
+        self.budget_head = (
+            BudgetHead(cfg.hidden_size, cfg.budget_max_horizon, cfg.budget_max_candidates)
+            if cfg.use_budget_head
+            else None
+        )
         self.world = (
             WorldHead(cfg.hidden_size, cfg.obs_dim, horizon=cfg.world_model_horizon)
             if cfg.use_world_pred
@@ -120,6 +134,11 @@ class VAGICore(nn.Module):
         world_logvar = self._apply_obs_uncertainty(world_logvar, obs)
         error_logits = self.error_head(h_policy) if self.error_head is not None else None
         info_gain = self.info_head(h_policy) if self.info_head is not None else None
+        budget_mode = None
+        budget_horizon = None
+        budget_candidates = None
+        if self.budget_head is not None:
+            budget_mode, budget_horizon, budget_candidates = self.budget_head(h_policy)
 
         state_out = None
         if state is not None:
@@ -138,6 +157,9 @@ class VAGICore(nn.Module):
             "world_logvar": world_logvar,
             "error_logits": error_logits,
             "info_gain": info_gain,
+            "budget_mode_logits": budget_mode,
+            "budget_horizon_logits": budget_horizon,
+            "budget_candidate_logits": budget_candidates,
             "state": state_out,
         }
         if return_hidden:
@@ -169,6 +191,14 @@ class VAGICore(nn.Module):
                 targets.get("info_gain") if targets else None,
             )
             losses.update(reflection)
+            losses.update(
+                budget_loss(
+                    budget_mode,
+                    budget_horizon,
+                    budget_candidates,
+                    targets,
+                )
+            )
 
             if losses:
                 outputs["loss"] = total_loss(losses, weights=targets.get("loss_weights"))
@@ -208,8 +238,16 @@ class VAGICore(nn.Module):
             "world_logvar": None,
             "error_logits": self.error_head(h_policy) if self.error_head is not None else None,
             "info_gain": self.info_head(h_policy) if self.info_head is not None else None,
+            "budget_mode_logits": None,
+            "budget_horizon_logits": None,
+            "budget_candidate_logits": None,
             "state": None,
         }
+        if self.budget_head is not None:
+            mode_logits, horizon_logits, candidate_logits = self.budget_head(h_policy)
+            outputs["budget_mode_logits"] = mode_logits
+            outputs["budget_horizon_logits"] = horizon_logits
+            outputs["budget_candidate_logits"] = candidate_logits
         if self.value_logvar is not None:
             outputs["value_logvar"] = self._apply_obs_uncertainty(self.value_logvar(h_policy), obs)
         if self.world_logvar is not None:
@@ -228,6 +266,97 @@ class VAGICore(nn.Module):
                 timestep=state.timestep + 1,
             )
         return outputs
+
+    @torch.no_grad()
+    def act(
+        self,
+        input_ids: torch.Tensor,
+        obs: torch.Tensor,
+        state: RecurrentState,
+        task_ids: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
+        """Fast policy-only action selection."""
+        out = self.step(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids)
+        action = torch.argmax(out["action_logits"], dim=-1)
+        return {
+            "action": action,
+            "mode": "act",
+            "outputs": out,
+        }
+
+    @torch.no_grad()
+    def think_then_act(
+        self,
+        input_ids: torch.Tensor,
+        obs: torch.Tensor,
+        state: RecurrentState,
+        task_ids: Optional[torch.Tensor] = None,
+        *,
+        horizon: Optional[int] = None,
+        num_candidates: Optional[int] = None,
+        strategy: str = "cem",
+        uncertainty_weight: float = 1.0,
+        info_gain_weight: float = 0.0,
+        uncertainty_fallback: Optional[float] = None,
+        error_stop_prob: Optional[float] = None,
+        error_stop_ids: Optional[list[int]] = None,
+    ) -> Dict[str, Any]:
+        """Plan then act using reflection + info gain with budget control."""
+        budget = None
+        if self.budget_head is not None:
+            base = self.forward(
+                input_ids=input_ids,
+                obs=obs,
+                task_ids=task_ids,
+                state=state,
+                return_loss=False,
+            )
+            budget = self._budget_from_logits(
+                base.get("budget_mode_logits"),
+                base.get("budget_horizon_logits"),
+                base.get("budget_candidate_logits"),
+            )
+            if budget["mode"] == "act":
+                act_out = self.act(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids)
+                act_out["budget"] = budget
+                return act_out
+            horizon = budget["horizon"]
+            num_candidates = budget["num_candidates"]
+
+        if self.world is None:
+            return self.act(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids)
+
+        plan = self.plan_step(
+            input_ids=input_ids,
+            obs=obs,
+            state=state,
+            task_ids=task_ids,
+            num_candidates=num_candidates or 4,
+            horizon=horizon or 3,
+            uncertainty_weight=uncertainty_weight,
+            info_gain_weight=info_gain_weight,
+            strategy=strategy,
+            uncertainty_fallback=uncertainty_fallback,
+            error_stop_prob=error_stop_prob,
+            error_stop_ids=error_stop_ids,
+        )
+        plan["budget"] = budget
+        return plan
+
+    def _budget_from_logits(
+        self,
+        mode_logits: Optional[torch.Tensor],
+        horizon_logits: Optional[torch.Tensor],
+        candidate_logits: Optional[torch.Tensor],
+    ) -> Dict[str, int | str]:
+        if mode_logits is None or horizon_logits is None or candidate_logits is None:
+            return {"mode": "think", "horizon": self.cfg.budget_max_horizon, "num_candidates": self.cfg.budget_max_candidates}
+        mode = "think" if int(torch.argmax(mode_logits, dim=-1)[0].item()) == 1 else "act"
+        horizon = int(torch.argmax(horizon_logits, dim=-1)[0].item()) + 1
+        candidates = int(torch.argmax(candidate_logits, dim=-1)[0].item()) + 1
+        horizon = max(1, min(self.cfg.budget_max_horizon, horizon))
+        candidates = max(1, min(self.cfg.budget_max_candidates, candidates))
+        return {"mode": mode, "horizon": horizon, "num_candidates": candidates}
 
     @torch.no_grad()
     def plan_step(
@@ -291,6 +420,7 @@ class VAGICore(nn.Module):
                             dtype=obs.dtype,
                         ),
                         "early_stop": True,
+                        "mode": "act",
                     }
         if uncertainty_fallback is not None:
             base_uncertainty = self._mean_uncertainty(base.get("world_logvar"), base.get("value_logvar"))
@@ -307,11 +437,12 @@ class VAGICore(nn.Module):
                         dtype=obs.dtype,
                     ),
                     "early_stop": False,
+                    "mode": "act",
                 }
 
         strategy_key = strategy.lower().strip()
         if strategy_key == "sample":
-            return self._plan_sample(
+            result = self._plan_sample(
                 action_logits=action_logits,
                 obs=obs,
                 task_ids=task_ids,
@@ -321,8 +452,10 @@ class VAGICore(nn.Module):
                 uncertainty_weight=uncertainty_weight,
                 info_gain_weight=info_gain_weight,
             )
+            result["mode"] = "think"
+            return result
         if strategy_key == "tree":
-            return self._plan_tree(
+            result = self._plan_tree(
                 action_logits=action_logits,
                 obs=obs,
                 task_ids=task_ids,
@@ -332,7 +465,9 @@ class VAGICore(nn.Module):
                 info_gain_weight=info_gain_weight,
                 branch=tree_branching,
             )
-        return self._plan_cem(
+            result["mode"] = "think"
+            return result
+        result = self._plan_cem(
             action_logits=action_logits,
             obs=obs,
             task_ids=task_ids,
@@ -344,6 +479,8 @@ class VAGICore(nn.Module):
             cem_iters=cem_iters,
             elite_frac=elite_frac,
         )
+        result["mode"] = "think"
+        return result
 
     def _score_sequence(
         self,
