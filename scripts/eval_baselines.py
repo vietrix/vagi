@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import csv
 import random
 import time
 from pathlib import Path
@@ -70,6 +71,19 @@ def _aggregate(records: List[Dict[str, object]]) -> Dict[str, float]:
         "mean_steps": mean_steps,
         "mean_latency_s": mean_latency,
     }
+
+
+def _aggregate_by_task(records: List[Dict[str, object]]) -> Dict[str, Dict[str, float]]:
+    buckets: Dict[str, List[Dict[str, object]]] = {}
+    for record in records:
+        task = str(record.get("task", "unknown"))
+        buckets.setdefault(task, []).append(record)
+    summary: Dict[str, Dict[str, float]] = {}
+    for task, recs in buckets.items():
+        metrics = _aggregate(recs)
+        metrics["episodes"] = float(len(recs))
+        summary[task] = metrics
+    return summary
 
 
 def _run_vagi_episode(
@@ -222,6 +236,47 @@ def main() -> None:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+    per_task = {
+        "config": results["config"],
+        "agents": {
+            "vagi": {"tasks": _aggregate_by_task(vagi_records)},
+            "random": {"tasks": _aggregate_by_task(random_records)},
+            "heuristic": {"tasks": _aggregate_by_task(heuristic_records)},
+        },
+    }
+    per_task_path = out_path.with_name("baselines_per_task.json")
+    per_task_path.write_text(json.dumps(per_task, indent=2), encoding="utf-8")
+
+    csv_path = out_path.with_name("baselines.csv")
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "task",
+                "agent",
+                "episodes",
+                "pass_rate",
+                "mean_reward",
+                "mean_steps",
+                "mean_latency_s",
+            ]
+        )
+        for agent_name, payload in per_task["agents"].items():
+            tasks = payload["tasks"]
+            for task_name in sorted(tasks.keys()):
+                metrics = tasks[task_name]
+                writer.writerow(
+                    [
+                        task_name,
+                        agent_name,
+                        int(metrics.get("episodes", 0.0)),
+                        f"{metrics['pass_rate']:.6f}",
+                        f"{metrics['mean_reward']:.6f}",
+                        f"{metrics['mean_steps']:.6f}",
+                        f"{metrics['mean_latency_s']:.6f}",
+                    ]
+                )
 
     def _row(name: str, metrics: Dict[str, float]) -> str:
         return (
