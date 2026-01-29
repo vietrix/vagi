@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
 from pathlib import Path
 from typing import Dict, List
 
@@ -98,8 +97,6 @@ def collect_rollouts(
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path = out_path.with_suffix(".meta.json")
-
     records: List[Dict[str, object]] = []
 
     for ep_idx in range(episodes):
@@ -115,7 +112,6 @@ def collect_rollouts(
             logits = out["action_logits"]
             dist = Categorical(logits=logits)
             action = int(dist.sample().item())
-            log_prob = float(dist.log_prob(torch.tensor(action, device=device)).item())
             value = float(out["value"].squeeze(-1).item())
 
             step_result = env.step(action)
@@ -123,17 +119,14 @@ def collect_rollouts(
             done = bool(step_result.done)
 
             record = {
-                "episode": int(ep_idx),
-                "step": int(step_idx),
                 "obs": _to_list(obs),
                 "action": int(action),
                 "reward": float(step_result.reward),
                 "done": done,
-                "next_obs": _to_list(next_obs),
                 "value": value,
-                "log_prob": log_prob,
-                "input_id": int(token_id),
-                "info": step_result.info,
+                "obs_next": _to_list(next_obs),
+                "timestep": int(step_idx),
+                "seed": int(seed),
             }
             records.append(record)
 
@@ -144,39 +137,9 @@ def collect_rollouts(
             if done:
                 break
 
-    meta = {
-        "format_version": 1,
-        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "seed": seed,
-        "episodes": episodes,
-        "episode_length": episode_length,
-        "gamma": gamma,
-        "env": {
-            "obs_dim": obs_dim,
-            "action_dim": action_dim,
-            "max_steps": episode_length,
-            "target": target,
-        },
-        "model": {
-            "vocab_size": vocab_size,
-            "hidden_size": hidden_size,
-            "layers": layers,
-            "heads": heads,
-            "obs_dim": obs_dim,
-            "obs_tokens": obs_tokens,
-            "action_dim": action_dim,
-            "memory_slots": memory_slots,
-            "max_seq_len": max_seq_len,
-            "use_special_tokens": use_special_tokens,
-        },
-        "special_tokens": ["<OBS>", "<ACT>", "<VAL>"] if use_special_tokens else [],
-    }
-
     with out_path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record) + "\n")
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
     return {"records": records}
 
 

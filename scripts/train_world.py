@@ -11,7 +11,6 @@ from typing import Dict, List
 
 import torch
 from torch.utils.data import DataLoader, Dataset
-from torch.nn import functional as F
 
 from vagi_core import VAGIConfig, VAGICore
 
@@ -23,9 +22,6 @@ class RolloutSample:
     obs: torch.Tensor
     action: int
     next_obs: torch.Tensor
-    episode: int
-    step: int
-    done: bool
 
 
 class RolloutDataset(Dataset):
@@ -79,45 +75,10 @@ def load_rollouts(path: str | Path) -> List[RolloutSample]:
             RolloutSample(
                 obs=torch.tensor(record["obs"], dtype=torch.float32),
                 action=int(record["action"]),
-                next_obs=torch.tensor(record["next_obs"], dtype=torch.float32),
-                episode=int(record["episode"]),
-                step=int(record["step"]),
-                done=bool(record["done"]),
+                next_obs=torch.tensor(record["obs_next"], dtype=torch.float32),
             )
         )
     return samples
-
-
-def compute_rollout_error(samples: List[RolloutSample], model: VAGICore, device: torch.device) -> float:
-    by_episode: Dict[int, List[RolloutSample]] = {}
-    for sample in samples:
-        by_episode.setdefault(sample.episode, []).append(sample)
-
-    total_error = 0.0
-    total_count = 0
-    model.eval()
-    with torch.no_grad():
-        for episode, steps in by_episode.items():
-            steps = sorted(steps, key=lambda s: s.step)
-            if not steps:
-                continue
-            state = model.init_state(batch_size=1, device=device)
-            pred_obs = steps[0].obs.to(device)
-            for sample in steps:
-                input_ids = torch.tensor([[sample.action]], dtype=torch.long, device=device)
-                out = model.step(input_ids=input_ids, obs=pred_obs.unsqueeze(0), state=state)
-                world_pred = out["world_pred"]
-                if world_pred is None:
-                    continue
-                target = sample.next_obs.to(device)
-                mse = F.mse_loss(world_pred.squeeze(0), target, reduction="mean")
-                total_error += float(mse.item())
-                total_count += 1
-                pred_obs = world_pred.squeeze(0)
-                state = out["state"]
-                if sample.done:
-                    break
-    return total_error / max(total_count, 1)
 
 
 def train_world(
@@ -208,21 +169,18 @@ def train_world(
             total_count += 1
 
         mean_loss = total_loss / max(total_count, 1)
-        rollout_error = compute_rollout_error(samples, model, device)
         record = {
             "epoch": float(epoch + 1),
             "world_loss": float(mean_loss),
-            "rollout_error": float(rollout_error),
         }
         metrics.append(record)
         with metrics_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record) + "\n")
 
         print(
-            "epoch={epoch} world_loss={loss:.6f} rollout_error={err:.6f}".format(
+            "epoch={epoch} world_loss={loss:.6f}".format(
                 epoch=epoch + 1,
                 loss=mean_loss,
-                err=rollout_error,
             )
         )
 
@@ -247,6 +205,7 @@ def train_world(
         },
     }
     (out_dir / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    torch.save(model.state_dict(), out_dir / "world_model.pt")
     return metrics
 
 
