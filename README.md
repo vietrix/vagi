@@ -43,6 +43,10 @@ Results are stored in `results/baselines.json`.
 Per-task summaries are stored in `results/baselines_per_task.json` and
 `results/baselines.csv`.
 
+## AI review
+
+See `docs/CI_CODEX.md` for triggering Codex reviews and autofix behavior.
+
 ## Privacy
 
 Logs and rollouts are scrubbed for common PII patterns by default. See
