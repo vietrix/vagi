@@ -121,6 +121,20 @@ def _aggregate(records: List[EpisodeRecord]) -> Dict[str, float]:
     }
 
 
+def _write_partial(run_dir: Path, config: Dict[str, object], records: List[EpisodeRecord]) -> None:
+    by_agent: Dict[str, List[EpisodeRecord]] = {}
+    for record in records:
+        by_agent.setdefault(record.agent, []).append(record)
+    summary = {agent: _aggregate(recs) for agent, recs in by_agent.items()}
+    payload = {
+        "config": config,
+        "summary": summary,
+        "records": [asdict(record) for record in records],
+    }
+    payload = scrub_record(payload)
+    (run_dir / "results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def _run_vagi_episode(
     *,
     model: VAGICore,
@@ -221,13 +235,32 @@ def main() -> None:
 
     patch = _default_patch()
     records: List[EpisodeRecord] = []
-    for seed in seeds:
-        set_deterministic(seed, args.deterministic)
-        for task_dir in tasks:
-            for episode_idx in range(args.episodes_per_task):
-                episode_seed = seed + episode_idx
-                records.append(
-                    _run_vagi_episode(
+    config = {
+        "tasks_dir": str(tasks_dir),
+        "obs_dim": args.obs_dim,
+        "max_steps": args.max_steps,
+        "max_run_tests": args.max_run_tests,
+        "episodes_per_task": args.episodes_per_task,
+        "seeds": seeds,
+        "level": args.level,
+        "limit_tasks": args.limit_tasks,
+        "deterministic": bool(args.deterministic),
+        "run_dir": str(run_dir),
+    }
+    info = _system_info(repo_root=Path(__file__).resolve().parents[1])
+    (run_dir / "system_info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+
+    csv_path = run_dir / "results.csv"
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["task", "seed", "agent", "success", "steps", "reward", "latency_s"])
+
+        for seed in seeds:
+            set_deterministic(seed, args.deterministic)
+            for task_dir in tasks:
+                for episode_idx in range(args.episodes_per_task):
+                    episode_seed = seed + episode_idx
+                    vagi_record = _run_vagi_episode(
                         model=model,
                         task_dir=task_dir,
                         obs_dim=args.obs_dim,
@@ -236,16 +269,27 @@ def main() -> None:
                         seed=episode_seed,
                         patch=patch,
                     )
-                )
-                rand = run_random_episode(
-                    task_dir=task_dir,
-                    obs_dim=args.obs_dim,
-                    max_steps=args.max_steps,
-                    max_run_tests=args.max_run_tests,
-                    seed=episode_seed,
-                )
-                records.append(
-                    EpisodeRecord(
+                    records.append(vagi_record)
+                    writer.writerow(
+                        [
+                            vagi_record.task,
+                            vagi_record.seed,
+                            vagi_record.agent,
+                            int(vagi_record.success),
+                            vagi_record.steps,
+                            f"{vagi_record.total_reward:.6f}",
+                            f"{vagi_record.latency_s:.6f}",
+                        ]
+                    )
+
+                    rand = run_random_episode(
+                        task_dir=task_dir,
+                        obs_dim=args.obs_dim,
+                        max_steps=args.max_steps,
+                        max_run_tests=args.max_run_tests,
+                        seed=episode_seed,
+                    )
+                    rand_record = EpisodeRecord(
                         task=rand["task"],
                         seed=episode_seed,
                         agent="random",
@@ -254,16 +298,27 @@ def main() -> None:
                         total_reward=float(rand["total_reward"]),
                         latency_s=float(rand["latency_s"]),
                     )
-                )
-                heur = run_heuristic_episode(
-                    task_dir=task_dir,
-                    obs_dim=args.obs_dim,
-                    max_steps=args.max_steps,
-                    max_run_tests=args.max_run_tests,
-                    seed=episode_seed,
-                )
-                records.append(
-                    EpisodeRecord(
+                    records.append(rand_record)
+                    writer.writerow(
+                        [
+                            rand_record.task,
+                            rand_record.seed,
+                            rand_record.agent,
+                            int(rand_record.success),
+                            rand_record.steps,
+                            f"{rand_record.total_reward:.6f}",
+                            f"{rand_record.latency_s:.6f}",
+                        ]
+                    )
+
+                    heur = run_heuristic_episode(
+                        task_dir=task_dir,
+                        obs_dim=args.obs_dim,
+                        max_steps=args.max_steps,
+                        max_run_tests=args.max_run_tests,
+                        seed=episode_seed,
+                    )
+                    heur_record = EpisodeRecord(
                         task=heur["task"],
                         seed=episode_seed,
                         agent="heuristic",
@@ -272,50 +327,20 @@ def main() -> None:
                         total_reward=float(heur["total_reward"]),
                         latency_s=float(heur["latency_s"]),
                     )
-                )
+                    records.append(heur_record)
+                    writer.writerow(
+                        [
+                            heur_record.task,
+                            heur_record.seed,
+                            heur_record.agent,
+                            int(heur_record.success),
+                            heur_record.steps,
+                            f"{heur_record.total_reward:.6f}",
+                            f"{heur_record.latency_s:.6f}",
+                        ]
+                    )
 
-    by_agent: Dict[str, List[EpisodeRecord]] = {}
-    for record in records:
-        by_agent.setdefault(record.agent, []).append(record)
-
-    summary = {agent: _aggregate(recs) for agent, recs in by_agent.items()}
-
-    result_payload = {
-        "config": {
-            "tasks_dir": str(tasks_dir),
-            "obs_dim": args.obs_dim,
-            "max_steps": args.max_steps,
-            "max_run_tests": args.max_run_tests,
-            "episodes_per_task": args.episodes_per_task,
-            "seeds": seeds,
-            "level": args.level,
-            "limit_tasks": args.limit_tasks,
-            "deterministic": bool(args.deterministic),
-            "run_dir": str(run_dir),
-        },
-        "summary": summary,
-        "records": [asdict(record) for record in records],
-    }
-
-    result_payload = scrub_record(result_payload)
-    (run_dir / "results.json").write_text(json.dumps(result_payload, indent=2), encoding="utf-8")
-    with (run_dir / "results.csv").open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["task", "seed", "agent", "success", "steps", "reward", "latency_s"])
-        for record in records:
-            writer.writerow(
-                [
-                    record.task,
-                    record.seed,
-                    record.agent,
-                    int(record.success),
-                    record.steps,
-                    f"{record.total_reward:.6f}",
-                    f"{record.latency_s:.6f}",
-                ]
-            )
-    info = _system_info(repo_root=Path(__file__).resolve().parents[1])
-    (run_dir / "system_info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+                _write_partial(run_dir=run_dir, config=config, records=records)
     print(f"Saved benchmark run to {run_dir}")
 
 
