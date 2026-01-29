@@ -9,8 +9,8 @@ from torch import nn
 
 from .backbone import CausalTransformerBackbone
 from .config import VAGIConfig
-from .heads import LanguageHead, LogVarHead, PolicyHead, ValueHead, WorldHead
-from .losses import language_loss, policy_loss, total_loss, value_loss, world_loss
+from .heads import ErrorTypeHead, InfoGainHead, LanguageHead, LogVarHead, PolicyHead, ValueHead, WorldHead
+from .losses import language_loss, policy_loss, reflection_loss, total_loss, value_loss, world_loss
 from .memory import KVCache, RecurrentState
 from .utils import check_floating, check_shape
 
@@ -26,6 +26,8 @@ class VAGICore(nn.Module):
         self.pi = PolicyHead(cfg.hidden_size, cfg.action_dim)
         self.v = ValueHead(cfg.hidden_size)
         self.value_logvar = LogVarHead(cfg.hidden_size, 1) if cfg.use_uncertainty else None
+        self.error_head = ErrorTypeHead(cfg.hidden_size, cfg.error_type_dim) if cfg.use_reflection else None
+        self.info_head = InfoGainHead(cfg.hidden_size) if cfg.use_reflection else None
         self.world = (
             WorldHead(cfg.hidden_size, cfg.obs_dim, horizon=cfg.world_model_horizon)
             if cfg.use_world_pred
@@ -116,6 +118,8 @@ class VAGICore(nn.Module):
         world_logvar = self._format_world_logvar(h_last) if self.world_logvar is not None else None
         value_logvar = self._apply_obs_uncertainty(value_logvar, obs)
         world_logvar = self._apply_obs_uncertainty(world_logvar, obs)
+        error_logits = self.error_head(h_policy) if self.error_head is not None else None
+        info_gain = self.info_head(h_policy) if self.info_head is not None else None
 
         state_out = None
         if state is not None:
@@ -132,6 +136,8 @@ class VAGICore(nn.Module):
             "value_logvar": value_logvar,
             "world_pred": world_pred,
             "world_logvar": world_logvar,
+            "error_logits": error_logits,
+            "info_gain": info_gain,
             "state": state_out,
         }
         if return_hidden:
@@ -156,6 +162,13 @@ class VAGICore(nn.Module):
                     losses["world"] = world_loss(world_pred, targets["obs_future"], logvar=world_logvar)
                 elif "obs_next" in targets:
                     losses["world"] = world_loss(world_pred, targets["obs_next"], logvar=world_logvar)
+            reflection = reflection_loss(
+                error_logits,
+                targets.get("error_types") if targets else None,
+                info_gain,
+                targets.get("info_gain") if targets else None,
+            )
+            losses.update(reflection)
 
             if losses:
                 outputs["loss"] = total_loss(losses, weights=targets.get("loss_weights"))
@@ -193,6 +206,8 @@ class VAGICore(nn.Module):
             "value_logvar": None,
             "world_pred": self.world(h_last) if self.world is not None else None,
             "world_logvar": None,
+            "error_logits": self.error_head(h_policy) if self.error_head is not None else None,
+            "info_gain": self.info_head(h_policy) if self.info_head is not None else None,
             "state": None,
         }
         if self.value_logvar is not None:
@@ -224,11 +239,14 @@ class VAGICore(nn.Module):
         num_candidates: int = 4,
         horizon: int = 3,
         uncertainty_weight: float = 1.0,
+        info_gain_weight: float = 0.0,
         strategy: str = "cem",
         cem_iters: int = 3,
         elite_frac: float = 0.2,
         tree_branching: int = 4,
         uncertainty_fallback: Optional[float] = None,
+        error_stop_prob: Optional[float] = None,
+        error_stop_ids: Optional[list[int]] = None,
     ) -> Dict[str, Any]:
         """Plan a single action by rolling out the world model and scoring with value."""
         if num_candidates <= 0:
@@ -256,6 +274,24 @@ class VAGICore(nn.Module):
             return_loss=False,
         )
         action_logits = base["action_logits"]
+        if error_stop_prob is not None and base.get("error_logits") is not None:
+            probs = torch.softmax(base["error_logits"], dim=-1)
+            max_prob, max_idx = torch.max(probs, dim=-1)
+            if torch.any(max_prob >= error_stop_prob):
+                if error_stop_ids is None or int(max_idx[0].item()) in error_stop_ids:
+                    greedy = torch.argmax(action_logits, dim=-1)
+                    return {
+                        "action": greedy,
+                        "action_logits": action_logits,
+                        "candidate_actions": greedy.unsqueeze(-1),
+                        "candidate_values": torch.full(
+                            (obs.shape[0], 1),
+                            float(base["value"].mean().item()),
+                            device=obs.device,
+                            dtype=obs.dtype,
+                        ),
+                        "early_stop": True,
+                    }
         if uncertainty_fallback is not None:
             base_uncertainty = self._mean_uncertainty(base.get("world_logvar"), base.get("value_logvar"))
             if base_uncertainty > uncertainty_fallback:
@@ -270,6 +306,7 @@ class VAGICore(nn.Module):
                         device=obs.device,
                         dtype=obs.dtype,
                     ),
+                    "early_stop": False,
                 }
 
         strategy_key = strategy.lower().strip()
@@ -282,6 +319,7 @@ class VAGICore(nn.Module):
                 num_candidates=num_candidates,
                 horizon=horizon,
                 uncertainty_weight=uncertainty_weight,
+                info_gain_weight=info_gain_weight,
             )
         if strategy_key == "tree":
             return self._plan_tree(
@@ -291,6 +329,7 @@ class VAGICore(nn.Module):
                 state=state,
                 horizon=horizon,
                 uncertainty_weight=uncertainty_weight,
+                info_gain_weight=info_gain_weight,
                 branch=tree_branching,
             )
         return self._plan_cem(
@@ -301,6 +340,7 @@ class VAGICore(nn.Module):
             num_candidates=num_candidates,
             horizon=horizon,
             uncertainty_weight=uncertainty_weight,
+            info_gain_weight=info_gain_weight,
             cem_iters=cem_iters,
             elite_frac=elite_frac,
         )
@@ -313,18 +353,22 @@ class VAGICore(nn.Module):
         *,
         task_ids: Optional[torch.Tensor],
         uncertainty_weight: float,
+        info_gain_weight: float,
     ) -> float:
         obs_roll = obs
         state_roll = state
         value = None
         uncertainty = 0.0
         uncertainty_steps = 0
+        info_gain_score = 0.0
+        info_gain_steps = 0
         for action in sequence:
             action_tensor = action.view(1, 1)
             out = self.step(input_ids=action_tensor, obs=obs_roll, state=state_roll, task_ids=task_ids)
             world_pred = out["world_pred"]
             world_logvar = out.get("world_logvar")
             value_logvar = out.get("value_logvar")
+            step_info = out.get("info_gain")
             if world_pred is None:
                 break
             if world_pred.ndim == 3:
@@ -341,6 +385,9 @@ class VAGICore(nn.Module):
             if value_logvar is not None:
                 uncertainty += float(torch.exp(value_logvar).mean().item())
                 uncertainty_steps += 1
+            if step_info is not None:
+                info_gain_score += float(step_info.mean().item())
+                info_gain_steps += 1
             state_roll = out["state"]
             value = out["value"]
         if value is None:
@@ -348,6 +395,8 @@ class VAGICore(nn.Module):
         score = float(value.squeeze().item())
         if uncertainty_steps > 0:
             score -= uncertainty_weight * (uncertainty / uncertainty_steps)
+        if info_gain_steps > 0 and info_gain_weight != 0.0:
+            score += info_gain_weight * (info_gain_score / info_gain_steps)
         return score
 
     def _plan_sample(
@@ -360,6 +409,7 @@ class VAGICore(nn.Module):
         num_candidates: int,
         horizon: int,
         uncertainty_weight: float,
+        info_gain_weight: float,
     ) -> Dict[str, Any]:
         probs = torch.softmax(action_logits, dim=-1)
         candidates = torch.multinomial(probs, num_samples=num_candidates, replacement=True)
@@ -376,6 +426,7 @@ class VAGICore(nn.Module):
                     sequence,
                     task_ids=task_ids[b : b + 1] if task_ids is not None else None,
                     uncertainty_weight=uncertainty_weight,
+                    info_gain_weight=info_gain_weight,
                 )
                 candidate_values[b, c] = score
         best_idx = torch.argmax(candidate_values, dim=-1)
@@ -397,6 +448,7 @@ class VAGICore(nn.Module):
         num_candidates: int,
         horizon: int,
         uncertainty_weight: float,
+        info_gain_weight: float,
         cem_iters: int,
         elite_frac: float,
     ) -> Dict[str, Any]:
@@ -424,6 +476,7 @@ class VAGICore(nn.Module):
                             sequences_tensor[idx],
                             task_ids=task_ids[b : b + 1] if task_ids is not None else None,
                             uncertainty_weight=uncertainty_weight,
+                            info_gain_weight=info_gain_weight,
                         )
                         for idx in range(num_candidates)
                     ],
@@ -458,6 +511,7 @@ class VAGICore(nn.Module):
         state: RecurrentState,
         horizon: int,
         uncertainty_weight: float,
+        info_gain_weight: float,
         branch: int,
     ) -> Dict[str, Any]:
         batch = obs.shape[0]
@@ -480,6 +534,7 @@ class VAGICore(nn.Module):
                     depth=horizon,
                     branch=branch,
                     uncertainty_weight=uncertainty_weight,
+                    info_gain_weight=info_gain_weight,
                 )
                 candidate_values[b, idx] = score
             best_idx = torch.argmax(candidate_values[b], dim=-1)
@@ -502,6 +557,7 @@ class VAGICore(nn.Module):
         depth: int,
         branch: int,
         uncertainty_weight: float,
+        info_gain_weight: float,
     ) -> float:
         action_tensor = action.view(1, 1)
         out = self.step(input_ids=action_tensor, obs=obs, state=state, task_ids=task_ids)
@@ -509,9 +565,12 @@ class VAGICore(nn.Module):
         world_logvar = out.get("world_logvar")
         value_logvar = out.get("value_logvar")
         value = out["value"]
+        info_gain = out.get("info_gain")
 
         uncertainty = 0.0
         uncertainty_steps = 0
+        info_gain_score = 0.0
+        info_gain_steps = 0
         if world_logvar is not None:
             if world_logvar.ndim == 3:
                 uncertainty += float(torch.exp(world_logvar[:, 0, :]).mean().item())
@@ -521,11 +580,16 @@ class VAGICore(nn.Module):
         if value_logvar is not None:
             uncertainty += float(torch.exp(value_logvar).mean().item())
             uncertainty_steps += 1
+        if info_gain is not None:
+            info_gain_score += float(info_gain.mean().item())
+            info_gain_steps += 1
 
         if depth <= 1 or world_pred is None:
             score = float(value.squeeze().item())
             if uncertainty_steps > 0:
                 score -= uncertainty_weight * (uncertainty / uncertainty_steps)
+            if info_gain_steps > 0 and info_gain_weight != 0.0:
+                score += info_gain_weight * (info_gain_score / info_gain_steps)
             return score
 
         if world_pred.ndim == 3:
@@ -546,6 +610,7 @@ class VAGICore(nn.Module):
                 depth=depth - 1,
                 branch=branch,
                 uncertainty_weight=uncertainty_weight,
+                info_gain_weight=info_gain_weight,
             )
             if score > best_score:
                 best_score = score

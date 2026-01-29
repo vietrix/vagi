@@ -27,6 +27,8 @@ class VAGIConfig:
     use_grad_checkpoint: bool = False
     use_task_embedding: bool = False
     task_vocab_size: int = 1
+    use_reflection: bool = False
+    error_type_dim: int = 4
     use_world_pred: bool = False
     world_model_horizon: int = 1
     use_confidence: bool = False
@@ -77,6 +79,8 @@ class VAGIConfig:
             raise ValueError("world_model_horizon must be > 0")
         if self.task_vocab_size <= 0:
             raise ValueError("task_vocab_size must be > 0")
+        if self.error_type_dim <= 0:
+            raise ValueError("error_type_dim must be > 0")
         if not (0.0 <= self.memory_decay <= 1.0):
             raise ValueError("memory_decay must be in [0, 1]")
         if self.memory_consolidate_every < 0:

@@ -131,3 +131,21 @@ def representation_loss(
         labels = torch.arange(logits.shape[0], device=logits.device)
         return torch.nn.functional.cross_entropy(logits, labels)
     return F.mse_loss(anchor, target)
+
+
+def reflection_loss(
+    error_logits: Optional[torch.Tensor],
+    error_targets: Optional[torch.Tensor],
+    info_gain: Optional[torch.Tensor],
+    info_targets: Optional[torch.Tensor],
+) -> Dict[str, torch.Tensor]:
+    losses: Dict[str, torch.Tensor] = {}
+    if error_logits is not None and error_targets is not None:
+        if error_targets.dtype != torch.long:
+            raise TypeError("error_targets must be torch.long")
+        if error_targets.ndim == 2 and error_targets.shape[-1] == 1:
+            error_targets = error_targets.squeeze(-1)
+        losses["error_type"] = F.cross_entropy(error_logits, error_targets)
+    if info_gain is not None and info_targets is not None:
+        losses["info_gain"] = F.mse_loss(info_gain, info_targets)
+    return losses

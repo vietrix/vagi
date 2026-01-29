@@ -75,3 +75,25 @@ class WorldHead(nn.Module):
     def forward(self, h_last: torch.Tensor) -> torch.Tensor:
         out = self.proj(h_last)
         return out.view(h_last.shape[0], self.horizon, self.obs_dim)
+
+
+class ErrorTypeHead(nn.Module):
+    """Predict error-type logits for reflection."""
+
+    def __init__(self, hidden_size: int, error_dim: int) -> None:
+        super().__init__()
+        self.proj = nn.Linear(hidden_size, error_dim)
+
+    def forward(self, h_last: torch.Tensor) -> torch.Tensor:
+        return self.proj(h_last)
+
+
+class InfoGainHead(nn.Module):
+    """Predict information-gain score in [0, 1]."""
+
+    def __init__(self, hidden_size: int) -> None:
+        super().__init__()
+        self.proj = nn.Linear(hidden_size, 1)
+
+    def forward(self, h_last: torch.Tensor) -> torch.Tensor:
+        return torch.sigmoid(self.proj(h_last))
