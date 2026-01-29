@@ -32,21 +32,34 @@ class ObsTokenizer(nn.Module):
 
 
 class FastMemory(nn.Module):
-    """Fast memory update module with gated writes."""
+    """Fast memory update module with gated writes and stabilization."""
 
-    def __init__(self, hidden_size: int, memory_slots: int) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        memory_slots: int,
+        *,
+        decay: float,
+        protect: bool,
+        consolidate_every: int,
+    ) -> None:
         super().__init__()
         self.memory_slots = memory_slots
+        self.decay = decay
+        self.consolidate_every = consolidate_every
         self.query = nn.Linear(hidden_size, hidden_size, bias=False)
         self.key = nn.Linear(hidden_size, hidden_size, bias=False)
         self.value = nn.Linear(hidden_size, hidden_size, bias=False)
         self.write = nn.Linear(hidden_size, hidden_size)
         self.erase = nn.Linear(hidden_size, memory_slots)
+        self.protect = nn.Linear(hidden_size, 1) if protect else None
 
-    def forward(self, mem: torch.Tensor, h_last: torch.Tensor) -> torch.Tensor:
+    def forward(self, mem: torch.Tensor, h_last: torch.Tensor, timestep: Optional[int] = None) -> torch.Tensor:
         check_shape(mem, (None, self.memory_slots, None), "mem")
         if self.memory_slots == 0:
             return mem
+        if self.decay < 1.0:
+            mem = mem * self.decay
 
         q = self.query(h_last)  # (B, D)
         k = self.key(mem)  # (B, M, D)
@@ -61,8 +74,16 @@ class FastMemory(nn.Module):
 
         write_update = attn_weights.unsqueeze(-1) * write.unsqueeze(1)
         erase_mask = erase.unsqueeze(-1) * attn_weights.unsqueeze(-1)
+        if self.protect is not None:
+            protect_gate = torch.sigmoid(self.protect(mem))  # (B, M, 1)
+            write_update = write_update * (1.0 - protect_gate)
+            erase_mask = erase_mask * (1.0 - protect_gate)
         mem = mem * (1.0 - erase_mask) + write_update
         _ = (attn_weights.unsqueeze(-1) * v).sum(dim=1)
+        if self.consolidate_every > 0 and timestep is not None:
+            if (timestep + 1) % self.consolidate_every == 0:
+                summary = mem.mean(dim=1, keepdim=True)
+                mem[:, :1, :] = 0.5 * mem[:, :1, :] + 0.5 * summary
         return mem
 
 
@@ -222,7 +243,18 @@ class CausalTransformerBackbone(nn.Module):
         self.use_special_tokens = cfg.use_special_tokens
         self.special_embed = nn.Embedding(len(SPECIAL_TOKENS), cfg.hidden_size) if cfg.use_special_tokens else None
         self.obs_tokenizer = ObsTokenizer(cfg.obs_dim, cfg.obs_tokens, cfg.hidden_size) if cfg.obs_tokens > 0 else None
-        self.memory = FastMemory(cfg.hidden_size, cfg.memory_slots) if cfg.memory_slots > 0 else None
+        self.task_embed = nn.Embedding(cfg.task_vocab_size, cfg.hidden_size) if cfg.use_task_embedding else None
+        self.memory = (
+            FastMemory(
+                cfg.hidden_size,
+                cfg.memory_slots,
+                decay=cfg.memory_decay,
+                protect=cfg.memory_protect,
+                consolidate_every=cfg.memory_consolidate_every,
+            )
+            if cfg.memory_slots > 0
+            else None
+        )
         self.blocks = nn.ModuleList([TransformerBlock(cfg) for _ in range(cfg.n_layers)])
 
     def _combine_inputs(
@@ -269,6 +301,7 @@ class CausalTransformerBackbone(nn.Module):
         self,
         input_ids: torch.Tensor,
         obs: Optional[torch.Tensor] = None,
+        task_ids: Optional[torch.Tensor] = None,
         state: Optional[RecurrentState] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         if input_ids.dtype != torch.long:
@@ -282,6 +315,13 @@ class CausalTransformerBackbone(nn.Module):
             obs_tokens = self.obs_tokenizer(obs)
 
         x, act_index = self._combine_inputs(token_embed, obs_tokens, include_special)
+        if task_ids is not None and self.task_embed is not None:
+            if task_ids.dtype != torch.long:
+                raise TypeError("task_ids must be torch.long")
+            if task_ids.ndim != 1 or task_ids.shape[0] != input_ids.shape[0]:
+                raise ValueError("task_ids must have shape (B,)")
+            task_emb = self.task_embed(task_ids).unsqueeze(1)
+            x = x + task_emb
 
         seq_len = x.shape[1]
         if seq_len > self.pos_embed.num_embeddings:
@@ -300,7 +340,7 @@ class CausalTransformerBackbone(nn.Module):
         mem_next = None
         if state is not None and self.memory is not None:
             h_pool = h_act if h_act is not None else h_last
-            mem_next = self.memory(state.mem, h_pool)
+            mem_next = self.memory(state.mem, h_pool, timestep=state.timestep)
 
         return x, h_last, h_act, mem_next
 
@@ -308,6 +348,7 @@ class CausalTransformerBackbone(nn.Module):
         self,
         input_ids: torch.Tensor,
         obs: torch.Tensor,
+        task_ids: Optional[torch.Tensor],
         state: RecurrentState,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], KVCache]:
         if input_ids.dtype != torch.long:
@@ -320,6 +361,13 @@ class CausalTransformerBackbone(nn.Module):
         obs_tokens = self.obs_tokenizer(obs) if self.obs_tokenizer is not None else None
         include_special = self.use_special_tokens and obs is not None
         x, act_index = self._combine_inputs(token_embed, obs_tokens, include_special)
+        if task_ids is not None and self.task_embed is not None:
+            if task_ids.dtype != torch.long:
+                raise TypeError("task_ids must be torch.long")
+            if task_ids.ndim != 1 or task_ids.shape[0] != input_ids.shape[0]:
+                raise ValueError("task_ids must have shape (B,)")
+            task_emb = self.task_embed(task_ids).unsqueeze(1)
+            x = x + task_emb
 
         start_pos = self._kv_len(state.kv)
         x = self._add_positions(x, start_pos=start_pos)
@@ -357,6 +405,6 @@ class CausalTransformerBackbone(nn.Module):
         mem_next = None
         if self.memory is not None:
             h_pool = h_act if h_act is not None else h_last
-            mem_next = self.memory(state.mem, h_pool)
+            mem_next = self.memory(state.mem, h_pool, timestep=state.timestep)
 
         return x, h_last, h_act, mem_next, kv_next

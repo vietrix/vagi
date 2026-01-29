@@ -79,6 +79,7 @@ class VAGICore(nn.Module):
         self,
         input_ids: torch.Tensor,
         obs: Optional[torch.Tensor] = None,
+        task_ids: Optional[torch.Tensor] = None,
         state: Optional[RecurrentState] = None,
         labels: Optional[torch.Tensor] = None,
         targets: Optional[Dict[str, Any]] = None,
@@ -99,7 +100,12 @@ class VAGICore(nn.Module):
                 raise TypeError("state must be a RecurrentState")
             check_shape(state.mem, (input_ids.shape[0], self.cfg.memory_slots, self.cfg.hidden_size), "state.mem")
 
-        x, h_last, h_act, mem_next = self.backbone(input_ids=input_ids, obs=obs, state=state)
+        x, h_last, h_act, mem_next = self.backbone(
+            input_ids=input_ids,
+            obs=obs,
+            task_ids=task_ids,
+            state=state,
+        )
 
         text_logits = self.lang(x)
         h_policy = h_act if h_act is not None else h_last
@@ -161,7 +167,13 @@ class VAGICore(nn.Module):
         return outputs
 
     @torch.no_grad()
-    def step(self, input_ids: torch.Tensor, obs: torch.Tensor, state: RecurrentState) -> Dict[str, Any]:
+    def step(
+        self,
+        input_ids: torch.Tensor,
+        obs: torch.Tensor,
+        state: RecurrentState,
+        task_ids: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
         """Single-step inference with recurrent state update."""
         if state is None:
             raise ValueError("state is required for step()")
@@ -170,6 +182,7 @@ class VAGICore(nn.Module):
         x, h_last, h_act, mem_next, kv_next = self.backbone.forward_step(
             input_ids=input_ids,
             obs=obs,
+            task_ids=task_ids,
             state=state,
         )
         h_policy = h_act if h_act is not None else h_last
@@ -207,6 +220,7 @@ class VAGICore(nn.Module):
         input_ids: torch.Tensor,
         obs: torch.Tensor,
         state: RecurrentState,
+        task_ids: Optional[torch.Tensor] = None,
         num_candidates: int = 4,
         horizon: int = 3,
         uncertainty_weight: float = 1.0,
@@ -214,6 +228,7 @@ class VAGICore(nn.Module):
         cem_iters: int = 3,
         elite_frac: float = 0.2,
         tree_branching: int = 4,
+        uncertainty_fallback: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Plan a single action by rolling out the world model and scoring with value."""
         if num_candidates <= 0:
@@ -233,14 +248,36 @@ class VAGICore(nn.Module):
         if obs is None:
             raise ValueError("obs is required for plan_step")
 
-        base = self.forward(input_ids=input_ids, obs=obs, state=state, return_loss=False)
+        base = self.forward(
+            input_ids=input_ids,
+            obs=obs,
+            task_ids=task_ids,
+            state=state,
+            return_loss=False,
+        )
         action_logits = base["action_logits"]
+        if uncertainty_fallback is not None:
+            base_uncertainty = self._mean_uncertainty(base.get("world_logvar"), base.get("value_logvar"))
+            if base_uncertainty > uncertainty_fallback:
+                greedy = torch.argmax(action_logits, dim=-1)
+                return {
+                    "action": greedy,
+                    "action_logits": action_logits,
+                    "candidate_actions": greedy.unsqueeze(-1),
+                    "candidate_values": torch.full(
+                        (obs.shape[0], 1),
+                        float(base["value"].mean().item()),
+                        device=obs.device,
+                        dtype=obs.dtype,
+                    ),
+                }
 
         strategy_key = strategy.lower().strip()
         if strategy_key == "sample":
             return self._plan_sample(
                 action_logits=action_logits,
                 obs=obs,
+                task_ids=task_ids,
                 state=state,
                 num_candidates=num_candidates,
                 horizon=horizon,
@@ -250,6 +287,7 @@ class VAGICore(nn.Module):
             return self._plan_tree(
                 action_logits=action_logits,
                 obs=obs,
+                task_ids=task_ids,
                 state=state,
                 horizon=horizon,
                 uncertainty_weight=uncertainty_weight,
@@ -258,6 +296,7 @@ class VAGICore(nn.Module):
         return self._plan_cem(
             action_logits=action_logits,
             obs=obs,
+            task_ids=task_ids,
             state=state,
             num_candidates=num_candidates,
             horizon=horizon,
@@ -272,6 +311,7 @@ class VAGICore(nn.Module):
         state: RecurrentState,
         sequence: torch.Tensor,
         *,
+        task_ids: Optional[torch.Tensor],
         uncertainty_weight: float,
     ) -> float:
         obs_roll = obs
@@ -281,7 +321,7 @@ class VAGICore(nn.Module):
         uncertainty_steps = 0
         for action in sequence:
             action_tensor = action.view(1, 1)
-            out = self.step(input_ids=action_tensor, obs=obs_roll, state=state_roll)
+            out = self.step(input_ids=action_tensor, obs=obs_roll, state=state_roll, task_ids=task_ids)
             world_pred = out["world_pred"]
             world_logvar = out.get("world_logvar")
             value_logvar = out.get("value_logvar")
@@ -315,6 +355,7 @@ class VAGICore(nn.Module):
         *,
         action_logits: torch.Tensor,
         obs: torch.Tensor,
+        task_ids: Optional[torch.Tensor],
         state: RecurrentState,
         num_candidates: int,
         horizon: int,
@@ -328,10 +369,12 @@ class VAGICore(nn.Module):
             state_roll = self._slice_state(state, b)
             for c in range(num_candidates):
                 action = candidates[b, c].view(1, 1)
+                sequence = action.view(1).repeat(horizon)
                 score = self._score_sequence(
                     obs[b : b + 1],
                     state_roll.clone(),
-                    action.view(1),
+                    sequence,
+                    task_ids=task_ids[b : b + 1] if task_ids is not None else None,
                     uncertainty_weight=uncertainty_weight,
                 )
                 candidate_values[b, c] = score
@@ -349,6 +392,7 @@ class VAGICore(nn.Module):
         *,
         action_logits: torch.Tensor,
         obs: torch.Tensor,
+        task_ids: Optional[torch.Tensor],
         state: RecurrentState,
         num_candidates: int,
         horizon: int,
@@ -378,6 +422,7 @@ class VAGICore(nn.Module):
                             obs[b : b + 1],
                             state_roll.clone(),
                             sequences_tensor[idx],
+                            task_ids=task_ids[b : b + 1] if task_ids is not None else None,
                             uncertainty_weight=uncertainty_weight,
                         )
                         for idx in range(num_candidates)
@@ -409,6 +454,7 @@ class VAGICore(nn.Module):
         *,
         action_logits: torch.Tensor,
         obs: torch.Tensor,
+        task_ids: Optional[torch.Tensor],
         state: RecurrentState,
         horizon: int,
         uncertainty_weight: float,
@@ -430,6 +476,7 @@ class VAGICore(nn.Module):
                     obs[b : b + 1],
                     self._slice_state(state, b),
                     action.view(1),
+                    task_ids=task_ids[b : b + 1] if task_ids is not None else None,
                     depth=horizon,
                     branch=branch,
                     uncertainty_weight=uncertainty_weight,
@@ -451,12 +498,13 @@ class VAGICore(nn.Module):
         state: RecurrentState,
         action: torch.Tensor,
         *,
+        task_ids: Optional[torch.Tensor],
         depth: int,
         branch: int,
         uncertainty_weight: float,
     ) -> float:
         action_tensor = action.view(1, 1)
-        out = self.step(input_ids=action_tensor, obs=obs, state=state)
+        out = self.step(input_ids=action_tensor, obs=obs, state=state, task_ids=task_ids)
         world_pred = out["world_pred"]
         world_logvar = out.get("world_logvar")
         value_logvar = out.get("value_logvar")
@@ -494,6 +542,7 @@ class VAGICore(nn.Module):
                 obs_next,
                 out["state"],
                 next_action.view(1),
+                task_ids=task_ids,
                 depth=depth - 1,
                 branch=branch,
                 uncertainty_weight=uncertainty_weight,
@@ -501,6 +550,26 @@ class VAGICore(nn.Module):
             if score > best_score:
                 best_score = score
         return best_score
+
+    @staticmethod
+    def _mean_uncertainty(
+        world_logvar: Optional[torch.Tensor],
+        value_logvar: Optional[torch.Tensor],
+    ) -> float:
+        total = 0.0
+        count = 0
+        if world_logvar is not None:
+            if world_logvar.ndim == 3:
+                total += float(torch.exp(world_logvar[:, 0, :]).mean().item())
+            else:
+                total += float(torch.exp(world_logvar).mean().item())
+            count += 1
+        if value_logvar is not None:
+            total += float(torch.exp(value_logvar).mean().item())
+            count += 1
+        if count == 0:
+            return 0.0
+        return total / count
 
     @staticmethod
     def _slice_state(state: RecurrentState, index: int) -> RecurrentState:

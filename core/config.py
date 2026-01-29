@@ -25,11 +25,16 @@ class VAGIConfig:
     use_gqa: bool = False
     use_flash_attn: bool = False
     use_grad_checkpoint: bool = False
+    use_task_embedding: bool = False
+    task_vocab_size: int = 1
     use_world_pred: bool = False
     world_model_horizon: int = 1
     use_confidence: bool = False
     use_uncertainty: bool = False
     uncertainty_obs_scale: float = 0.0
+    memory_decay: float = 1.0
+    memory_protect: bool = False
+    memory_consolidate_every: int = 0
     use_special_tokens: bool = True
 
     def __post_init__(self) -> None:
@@ -70,6 +75,12 @@ class VAGIConfig:
             raise ValueError("memory_slots must be >= 0")
         if self.world_model_horizon <= 0:
             raise ValueError("world_model_horizon must be > 0")
+        if self.task_vocab_size <= 0:
+            raise ValueError("task_vocab_size must be > 0")
+        if not (0.0 <= self.memory_decay <= 1.0):
+            raise ValueError("memory_decay must be in [0, 1]")
+        if self.memory_consolidate_every < 0:
+            raise ValueError("memory_consolidate_every must be >= 0")
         if self.uncertainty_obs_scale < 0.0:
             raise ValueError("uncertainty_obs_scale must be >= 0")
         if not (0.0 <= self.dropout < 1.0):
