@@ -1,0 +1,5 @@
+def reverse_string(text: str) -> str:
+    return "".join(sorted(text))
+---
+def reverse_string(text: str) -> str:
+    return text[::-1]

@@ -1,0 +1,6 @@
+from src.buggy import square
+
+
+def test_square() -> None:
+    assert square(3) == 9
+    assert square(-2) == 4
