@@ -1,0 +1,51 @@
+name: benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      episodes:
+        description: "Episodes per agent for baseline evaluation"
+        required: false
+        default: "10"
+      level:
+        description: "Benchmark curriculum level (1/2/3) or empty for all"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  run-benchmarks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+          python -m pip install -e . --no-deps
+      - name: Run code benchmarks
+        run: |
+          level="${{ inputs.level }}"
+          if [ -n "$level" ]; then
+            python -m scripts.run_all_benchmarks --deterministic --level "$level"
+          else
+            python -m scripts.run_all_benchmarks --deterministic
+          fi
+      - name: Run baseline evaluation
+        run: |
+          episodes="${{ inputs.episodes }}"
+          python -m scripts.eval_baselines --episodes "${episodes:-10}" --deterministic
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            results/*.json
+            results/*.csv
