@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--anchor-weight", type=float, default=0.0)
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--grad-checkpoint", action="store_true")
+    parser.add_argument("--obs-noise-std", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--vocab-size", type=int, default=128)
@@ -107,6 +108,8 @@ def main() -> None:
         )
         for batch in batch_iter:
             obs = batch["obs"]
+            if args.obs_noise_std > 0.0:
+                obs = obs + torch.randn_like(obs) * args.obs_noise_std
             actions = batch["actions"]
             returns = batch["returns"]
             if int(actions.max().item()) >= cfg.action_dim:

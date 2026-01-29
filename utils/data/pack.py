@@ -15,6 +15,7 @@ def pack_batches(
     batch_size: int,
     horizon: int,
     gamma: float,
+    task_id: int | None = None,
 ) -> Iterator[Dict[str, torch.Tensor]]:
     """Yield packed batches from a stream of rollout records."""
     if batch_size <= 0:
@@ -26,7 +27,7 @@ def pack_batches(
 
     buffer: List[Dict[str, torch.Tensor]] = []
     for episode in _iter_episodes(records):
-        samples = _episode_to_samples(episode, horizon=horizon, gamma=gamma)
+        samples = _episode_to_samples(episode, horizon=horizon, gamma=gamma, task_id=task_id)
         for sample in samples:
             buffer.append(sample)
             if len(buffer) >= batch_size:
@@ -60,6 +61,7 @@ def _episode_to_samples(
     *,
     horizon: int,
     gamma: float,
+    task_id: int | None,
 ) -> List[Dict[str, torch.Tensor]]:
     obs_dim = len(episode[0].obs)
     obs_seq = [record.obs for record in episode]
@@ -79,16 +81,17 @@ def _episode_to_samples(
                 future_obs.append([0.0 for _ in range(obs_dim)])
                 masks.append(0.0)
 
-        samples.append(
-            {
-                "obs": torch.tensor(record.obs, dtype=torch.float32),
-                "obs_future": torch.tensor(future_obs, dtype=torch.float32),
-                "actions": torch.tensor(record.action, dtype=torch.long),
-                "returns": torch.tensor([returns[idx]], dtype=torch.float32),
-                "rewards": torch.tensor([record.reward], dtype=torch.float32),
-                "mask": torch.tensor(masks, dtype=torch.float32),
-            }
-        )
+        sample = {
+            "obs": torch.tensor(record.obs, dtype=torch.float32),
+            "obs_future": torch.tensor(future_obs, dtype=torch.float32),
+            "actions": torch.tensor(record.action, dtype=torch.long),
+            "returns": torch.tensor([returns[idx]], dtype=torch.float32),
+            "rewards": torch.tensor([record.reward], dtype=torch.float32),
+            "mask": torch.tensor(masks, dtype=torch.float32),
+        }
+        if task_id is not None:
+            sample["task_id"] = torch.tensor(task_id, dtype=torch.long)
+        samples.append(sample)
     return samples
 
 
@@ -102,7 +105,7 @@ def _compute_returns(rewards: List[float], gamma: float) -> List[float]:
 
 
 def _collate(samples: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-    batch = {
+    batch: Dict[str, torch.Tensor] = {
         "obs": torch.stack([s["obs"] for s in samples], dim=0),
         "obs_future": torch.stack([s["obs_future"] for s in samples], dim=0),
         "actions": torch.stack([s["actions"] for s in samples], dim=0),
@@ -110,4 +113,6 @@ def _collate(samples: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         "rewards": torch.stack([s["rewards"] for s in samples], dim=0),
         "mask": torch.stack([s["mask"] for s in samples], dim=0),
     }
+    if "task_id" in samples[0]:
+        batch["task_id"] = torch.stack([s["task_id"] for s in samples], dim=0)
     return batch

@@ -52,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rep-method", type=str, default="mse", choices=["mse", "cosine", "contrastive"])
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--grad-checkpoint", action="store_true")
+    parser.add_argument("--obs-noise-std", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--vocab-size", type=int, default=128)
@@ -92,8 +93,8 @@ def _normalize_weights(weights: List[float], temperature: float) -> List[float]:
     return [w / total for w in scaled]
 
 
-def _build_batch_iter(path: str, *, batch_size: int, horizon: int, gamma: float):
-    return pack_batches(read_jsonl(path), batch_size=batch_size, horizon=horizon, gamma=gamma)
+def _build_batch_iter(path: str, *, batch_size: int, horizon: int, gamma: float, task_id: int):
+    return pack_batches(read_jsonl(path), batch_size=batch_size, horizon=horizon, gamma=gamma, task_id=task_id)
 
 
 def _load_anchor(path: Optional[str]) -> Optional[Dict[str, torch.Tensor]]:
@@ -126,6 +127,7 @@ def main() -> None:
 
     sources = _parse_sources(args.source)
     probs = _normalize_weights([spec.weight for spec in sources], args.temperature)
+    task_id_map = {spec.task: idx for idx, spec in enumerate(sources)}
 
     cfg = VAGIConfig(
         vocab_size=max(args.vocab_size, args.action_dim + 1),
@@ -142,6 +144,8 @@ def main() -> None:
         dropout=0.0,
         use_world_pred=False,
         use_grad_checkpoint=args.grad_checkpoint,
+        use_task_embedding=len(sources) > 1,
+        task_vocab_size=max(len(sources), 1),
     )
     model = VAGICore(cfg)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -154,7 +158,13 @@ def main() -> None:
     metrics_path = out_dir / "metrics.jsonl"
 
     iterators = [
-        _build_batch_iter(spec.path, batch_size=args.batch_size, horizon=args.horizon, gamma=args.gamma)
+        _build_batch_iter(
+            spec.path,
+            batch_size=args.batch_size,
+            horizon=args.horizon,
+            gamma=args.gamma,
+            task_id=task_id_map[spec.task],
+        )
         for spec in sources
     ]
     rng = torch.Generator().manual_seed(args.seed)
@@ -167,13 +177,20 @@ def main() -> None:
             batch = next(iterators[idx])
         except StopIteration:
             iterators[idx] = _build_batch_iter(
-                spec.path, batch_size=args.batch_size, horizon=args.horizon, gamma=args.gamma
+                spec.path,
+                batch_size=args.batch_size,
+                horizon=args.horizon,
+                gamma=args.gamma,
+                task_id=task_id_map[spec.task],
             )
             batch = next(iterators[idx])
 
         obs = batch["obs"]
+        if args.obs_noise_std > 0.0:
+            obs = obs + torch.randn_like(obs) * args.obs_noise_std
         actions = batch["actions"]
         returns = batch["returns"]
+        task_ids = batch.get("task_id")
 
         input_ids = actions.unsqueeze(1).clamp(max=cfg.vocab_size - 1)
         state = model.init_state(batch_size=obs.shape[0])
@@ -182,6 +199,7 @@ def main() -> None:
             out = model.forward(
                 input_ids=input_ids,
                 obs=obs,
+                task_ids=task_ids,
                 state=state,
                 return_loss=False,
                 return_hidden=args.rep_weight > 0.0,
@@ -203,13 +221,14 @@ def main() -> None:
 
             obs_noisy = obs + torch.randn_like(obs) * args.rep_noise_std
             with autocast:
-                rep_out = model.forward(
-                    input_ids=input_ids,
-                    obs=obs_noisy,
-                    state=state,
-                    return_loss=False,
-                    return_hidden=True,
-                )
+            rep_out = model.forward(
+                input_ids=input_ids,
+                obs=obs_noisy,
+                task_ids=task_ids,
+                state=state,
+                return_loss=False,
+                return_hidden=True,
+            )
             rep_loss = representation_loss(
                 out["hidden"],
                 rep_out["hidden"],
