@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import csv
+import os
 import random
 import time
 from pathlib import Path
@@ -179,6 +180,14 @@ def main() -> None:
     vagi_records: List[Dict[str, object]] = []
     random_records: List[Dict[str, object]] = []
     heuristic_records: List[Dict[str, object]] = []
+    llm_records: List[Dict[str, object]] | None = None
+
+    llm_enabled = bool(os.getenv("OPENAI_API_KEY"))
+    llm_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    llm_temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.0"))
+    if llm_enabled:
+        from scripts.baseline_llm_openai import run_episode as run_llm_episode
+        llm_records = []
 
     for spec in specs:
         task_dir = Path(spec["task"])
@@ -212,6 +221,18 @@ def main() -> None:
                 seed=seed,
             )
         )
+        if llm_records is not None:
+            llm_records.append(
+                run_llm_episode(
+                    task_dir=task_dir,
+                    obs_dim=args.obs_dim,
+                    max_steps=args.max_steps,
+                    max_run_tests=args.max_run_tests,
+                    seed=seed,
+                    model=llm_model,
+                    temperature=llm_temperature,
+                )
+            )
 
     results = {
         "config": {
@@ -232,6 +253,11 @@ def main() -> None:
             "heuristic": {"metrics": _aggregate(heuristic_records), "episodes": heuristic_records},
         },
     }
+    if llm_records is not None:
+        results["agents"]["llm_openai"] = {
+            "metrics": _aggregate(llm_records),
+            "episodes": llm_records,
+        }
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -245,6 +271,8 @@ def main() -> None:
             "heuristic": {"tasks": _aggregate_by_task(heuristic_records)},
         },
     }
+    if llm_records is not None:
+        per_task["agents"]["llm_openai"] = {"tasks": _aggregate_by_task(llm_records)}
     per_task_path = out_path.with_name("baselines_per_task.json")
     per_task_path.write_text(json.dumps(per_task, indent=2), encoding="utf-8")
 
@@ -288,6 +316,8 @@ def main() -> None:
     print(_row("vagi", results["agents"]["vagi"]["metrics"]))
     print(_row("random", results["agents"]["random"]["metrics"]))
     print(_row("heuristic", results["agents"]["heuristic"]["metrics"]))
+    if llm_records is not None:
+        print(_row("llm_openai", results["agents"]["llm_openai"]["metrics"]))
 
 
 if __name__ == "__main__":
