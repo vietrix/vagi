@@ -13,7 +13,6 @@ _PATTERNS = [
     ("IP", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")),
     ("PHONE", re.compile(r"\b(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}\b")),
     ("API_KEY", re.compile(r"\bsk-[A-Za-z0-9]{10,}\b")),
-    ("SECRET", re.compile(r"(?i)(api[_-]?key|token|secret)[^\\n]{0,64}")),
 ]
 
 
