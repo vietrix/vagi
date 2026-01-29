@@ -1,30 +1,30 @@
 {
   "levels": {
     "1": [
-      "task_01",
-      "task_02",
-      "task_03",
-      "task_04",
-      "task_05",
-      "task_06",
-      "task_07",
-      "task_08"
+      "level_1/task_01",
+      "level_1/task_02",
+      "level_1/task_03",
+      "level_1/task_04",
+      "level_1/task_05",
+      "level_1/task_06",
+      "level_1/task_07",
+      "level_1/task_08"
     ],
     "2": [
-      "task_09",
-      "task_10",
-      "task_11",
-      "task_12",
-      "task_13",
-      "task_14"
+      "level_2/task_09",
+      "level_2/task_10",
+      "level_2/task_11",
+      "level_2/task_12",
+      "level_2/task_13",
+      "level_2/task_14"
     ],
     "3": [
-      "task_15",
-      "task_16",
-      "task_17",
-      "task_18",
-      "task_19",
-      "task_20"
+      "level_3/task_15",
+      "level_3/task_16",
+      "level_3/task_17",
+      "level_3/task_18",
+      "level_3/task_19",
+      "level_3/task_20"
     ]
   }
 }

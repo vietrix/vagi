@@ -18,9 +18,11 @@ import torch
 
 from envs.code_env.actions import ACTION_DIM, ACTION_TYPES
 from envs.code_env.code_env import CodeEnv, PATCH_SEPARATOR
+from runtime.privacy import scrub_record
 from scripts.baseline_heuristic import run_episode as run_heuristic_episode
 from scripts.baseline_random import action_from_type as action_from_type_random
 from scripts.baseline_random import run_episode as run_random_episode
+from scripts.bench_utils import collect_tasks
 from scripts.utils import set_deterministic
 from vagi_core import VAGIConfig, VAGICore
 
@@ -54,23 +56,8 @@ def _parse_seeds(text: str | None) -> List[int]:
     return seeds
 
 
-def _load_manifest(tasks_dir: Path) -> Dict[str, List[str]]:
-    manifest_path = tasks_dir / "manifest.json"
-    if not manifest_path.exists():
-        return {}
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return data.get("levels", {})
-
-
 def _collect_tasks(tasks_dir: Path, level: int | None, limit: int | None) -> List[Path]:
-    task_dirs = sorted([p for p in tasks_dir.iterdir() if p.is_dir()])
-    if level is not None:
-        levels = _load_manifest(tasks_dir)
-        allowed = set(levels.get(str(level), []))
-        task_dirs = [p for p in task_dirs if p.name in allowed]
-    if limit is not None:
-        task_dirs = task_dirs[: max(limit, 0)]
-    return task_dirs
+    return collect_tasks(tasks_dir, level=level, limit=limit)
 
 
 def _git_commit(repo_root: Path) -> str:
@@ -310,6 +297,7 @@ def main() -> None:
         "records": [asdict(record) for record in records],
     }
 
+    result_payload = scrub_record(result_payload)
     (run_dir / "results.json").write_text(json.dumps(result_payload, indent=2), encoding="utf-8")
     with (run_dir / "results.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)

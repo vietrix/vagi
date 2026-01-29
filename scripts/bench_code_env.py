@@ -20,6 +20,7 @@ from envs.code_env.actions import (
     serialize_action,
 )
 from envs.code_env.code_env import CodeEnv
+from scripts.bench_utils import collect_tasks
 from scripts.utils import set_deterministic
 
 
@@ -43,14 +44,6 @@ def _load_patch(task_dir: Path) -> str:
     return patch_path.read_text(encoding="utf-8")
 
 
-def _load_manifest(tasks_dir: Path) -> Dict[str, List[str]]:
-    manifest_path = tasks_dir / "manifest.json"
-    if not manifest_path.exists():
-        return {}
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return data.get("levels", {})
-
-
 def run_benchmark(
     tasks_dir: Path,
     obs_dim: int,
@@ -64,11 +57,7 @@ def run_benchmark(
     total_steps = 0
     total_runs = 0
     total_time = 0.0
-    task_dirs = sorted([p for p in tasks_dir.iterdir() if p.is_dir()])
-    if level is not None:
-        levels = _load_manifest(tasks_dir)
-        allowed = set(levels.get(str(level), []))
-        task_dirs = [p for p in task_dirs if p.name in allowed]
+    task_dirs = collect_tasks(tasks_dir, level=level)
     for task_dir in task_dirs:
         env = CodeEnv(obs_dim=obs_dim, max_steps=max_steps, max_run_tests=2, seed=seed, repo_path=task_dir)
         env.reset()

@@ -18,6 +18,7 @@ from envs.code_env.code_env import CodeEnv, PATCH_SEPARATOR
 from scripts.baseline_heuristic import run_episode as run_heuristic_episode
 from scripts.baseline_random import action_from_type as action_from_type_random
 from scripts.baseline_random import run_episode as run_random_episode
+from scripts.bench_utils import collect_tasks
 from scripts.utils import set_deterministic
 from vagi_core import VAGIConfig, VAGICore
 
@@ -28,25 +29,12 @@ def _default_patch() -> str:
     return old + PATCH_SEPARATOR + new
 
 
-def _load_manifest(tasks_dir: Path) -> Dict[str, List[str]]:
-    manifest_path = tasks_dir / "manifest.json"
-    if not manifest_path.exists():
-        return {}
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return data.get("levels", {})
-
-
 def _collect_tasks(tasks_dir: Path, level: int | None, task: str | None) -> List[Path]:
     if task is not None:
         return [Path(task)]
     if not tasks_dir.exists():
         raise FileNotFoundError(f"Missing tasks dir: {tasks_dir}")
-    task_dirs = sorted([p for p in tasks_dir.iterdir() if p.is_dir()])
-    if level is None:
-        return task_dirs
-    levels = _load_manifest(tasks_dir)
-    allowed = set(levels.get(str(level), []))
-    return [p for p in task_dirs if p.name in allowed]
+    return collect_tasks(tasks_dir, level=level)
 
 
 def _episode_specs(tasks: List[Path], episodes: int, seed: int) -> List[Dict[str, object]]:
