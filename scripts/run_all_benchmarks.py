@@ -339,8 +339,10 @@ def main() -> None:
                             f"{heur_record.latency_s:.6f}",
                         ]
                     )
+                    handle.flush()
 
                 _write_partial(run_dir=run_dir, config=config, records=records)
+                handle.flush()
     print(f"Saved benchmark run to {run_dir}")
 
 
