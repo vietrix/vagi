@@ -53,6 +53,10 @@ This document describes the evaluation setup for vAGI and baseline agents.
 - `results.csv`: per-episode rows (task, seed, agent, success, steps, reward, latency).
 - `system_info.json`: CPU/GPU, torch version, and git commit hash.
 
+### results/ablations/
+- `fast_memory.json/.csv`, `world_head.json/.csv`, `kv_cache.json/.csv`.
+- Each file reports per-task metrics for the ablated feature.
+
 ### results/baselines.json
 - Aggregate metrics per agent and per-episode records.
 
