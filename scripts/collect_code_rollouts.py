@@ -20,7 +20,7 @@ from envs.code_env.actions import (
     serialize_action,
 )
 from envs.code_env.code_env import CodeEnv, PATCH_SEPARATOR
-from scripts.utils import set_seed
+from scripts.utils import set_deterministic
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=8)
     parser.add_argument("--obs-dim", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--policy", type=str, default="scripted", choices=["scripted"])
     return parser.parse_args()
 
@@ -51,13 +52,14 @@ def collect_rollouts(
     max_steps: int,
     obs_dim: int,
     seed: int,
+    deterministic: bool = False,
 ) -> List[Dict[str, object]]:
     if episodes <= 0:
         raise ValueError("episodes must be > 0")
     if max_steps <= 0:
         raise ValueError("max_steps must be > 0")
 
-    set_seed(seed)
+    set_deterministic(seed, deterministic)
     env = CodeEnv(obs_dim=obs_dim, max_steps=max_steps, seed=seed)
     records: List[Dict[str, object]] = []
     patch = _fix_patch()
@@ -114,6 +116,7 @@ def main() -> None:
         max_steps=args.max_steps,
         obs_dim=args.obs_dim,
         seed=args.seed,
+        deterministic=args.deterministic,
     )
     print(f"Saved code rollouts to {args.out}")
 

@@ -22,6 +22,7 @@ from envs.code_env.actions import (
 )
 from envs.code_env.code_env import CodeEnv
 from vagi_core import VAGIConfig, VAGICore
+from scripts.utils import set_deterministic
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--obs-dim", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--log", type=str, default="runs/code_env_agent.jsonl")
     parser.add_argument("--value-threshold", type=float, default=0.0)
     return parser.parse_args()
@@ -49,7 +51,7 @@ def _log(writer, record: Dict[str, object]) -> None:
 
 def main() -> None:
     args = parse_args()
-    torch.manual_seed(args.seed)
+    set_deterministic(args.seed, args.deterministic)
 
     env = CodeEnv(obs_dim=args.obs_dim, max_steps=args.steps, seed=args.seed, repo_path=args.task)
     obs = env.reset()

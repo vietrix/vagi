@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from envs.code_env.actions import ACTION_DIM
 from vagi_core import VAGIConfig, VAGICore
-from scripts.utils import set_seed
+from scripts.utils import set_deterministic
 
 
 class ValueDataset(Dataset):
@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--hidden-size", type=int, default=64)
     parser.add_argument("--layers", type=int, default=2)
     parser.add_argument("--heads", type=int, default=4)
@@ -83,7 +84,7 @@ def _finalize_episode(episode: List[Dict[str, object]], gamma: float, out: List[
 
 def main() -> None:
     args = parse_args()
-    set_seed(args.seed)
+    set_deterministic(args.seed, args.deterministic)
 
     records = _load_records(args.data)
     if not records:

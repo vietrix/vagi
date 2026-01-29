@@ -15,7 +15,7 @@ from scripts.collate import make_collate_fn
 from scripts.config import TrainConfig
 from scripts.dataset_text import TextDataset, build_tokenizer, load_texts
 from io.checkpoint import load_checkpoint, save_checkpoint
-from scripts.utils import get_lr, set_seed
+from scripts.utils import get_lr, set_deterministic
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--max-seq-len", type=int, default=64)
     parser.add_argument("--hidden-size", type=int, default=64)
     parser.add_argument("--layers", type=int, default=2)
@@ -69,7 +70,7 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
 def main() -> None:
     args = parse_args()
     cfg = build_train_config(args)
-    set_seed(cfg.seed)
+    set_deterministic(cfg.seed, args.deterministic)
 
     texts = load_texts(cfg.data_path)
     tokenizer = build_tokenizer(texts)

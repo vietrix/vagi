@@ -16,3 +16,6 @@ venv/
 .idea/
 .vscode/
 *.log
+runs/
+logs/
+results/

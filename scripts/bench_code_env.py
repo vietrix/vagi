@@ -20,6 +20,7 @@ from envs.code_env.actions import (
     serialize_action,
 )
 from envs.code_env.code_env import CodeEnv
+from scripts.utils import set_deterministic
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", type=str, default="runs/bench_code_env.json")
     parser.add_argument("--baseline", type=str, default="scripted", choices=["scripted"])
     parser.add_argument("--level", type=int, default=None, choices=[1, 2, 3])
+    parser.add_argument("--deterministic", action="store_true")
     return parser.parse_args()
 
 
@@ -116,6 +118,7 @@ def run_benchmark(
 
 def main() -> None:
     args = parse_args()
+    set_deterministic(args.seed, args.deterministic)
     tasks_dir = Path(args.tasks_dir)
     report = run_benchmark(tasks_dir, args.obs_dim, args.max_steps, args.seed, args.level, args.baseline)
     out_path = Path(args.out)
