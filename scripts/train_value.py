@@ -44,6 +44,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--obs-tokens", type=int, default=2)
     parser.add_argument("--memory-slots", type=int, default=4)
     parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--n-step", type=int, default=None)
+    parser.add_argument("--lambda-return", type=float, default=0.9)
     return parser.parse_args()
 
 
@@ -59,27 +61,76 @@ def _load_records(path: str | Path) -> List[Dict[str, object]]:
     return records
 
 
-def _attach_returns(records: List[Dict[str, object]], gamma: float) -> List[Dict[str, object]]:
+def _attach_returns(
+    records: List[Dict[str, object]],
+    gamma: float,
+    n_step: int | None,
+    lambda_return: float | None,
+) -> List[Dict[str, object]]:
     enriched: List[Dict[str, object]] = []
     episode: List[Dict[str, object]] = []
     for record in records:
         episode.append(record)
         if record.get("done", False):
-            _finalize_episode(episode, gamma, enriched)
+            _finalize_episode(episode, gamma, n_step, lambda_return, enriched)
             episode = []
     if episode:
-        _finalize_episode(episode, gamma, enriched)
+        _finalize_episode(episode, gamma, n_step, lambda_return, enriched)
     return enriched
 
 
-def _finalize_episode(episode: List[Dict[str, object]], gamma: float, out: List[Dict[str, object]]) -> None:
-    ret = 0.0
-    for record in reversed(episode):
-        reward = float(record.get("reward", 0.0))
-        ret = reward + gamma * ret
+def _finalize_episode(
+    episode: List[Dict[str, object]],
+    gamma: float,
+    n_step: int | None,
+    lambda_return: float | None,
+    out: List[Dict[str, object]],
+) -> None:
+    rewards = [float(record.get("reward", 0.0)) for record in episode]
+    returns = _compute_returns(rewards, gamma, n_step, lambda_return)
+    for record, ret in zip(episode, returns):
         item = dict(record)
         item["return"] = ret
         out.append(item)
+
+
+def _compute_returns(
+    rewards: List[float],
+    gamma: float,
+    n_step: int | None,
+    lambda_return: float | None,
+) -> List[float]:
+    length = len(rewards)
+    returns = [0.0 for _ in range(length)]
+    for t in range(length):
+        horizon = length - t
+        if n_step is not None:
+            horizon = min(horizon, max(n_step, 1))
+        if lambda_return is None:
+            returns[t] = _n_step_return(rewards, t, horizon, gamma)
+        else:
+            lam = max(0.0, min(1.0, float(lambda_return)))
+            returns[t] = _lambda_return(rewards, t, horizon, gamma, lam)
+    return returns
+
+
+def _n_step_return(rewards: List[float], start: int, horizon: int, gamma: float) -> float:
+    ret = 0.0
+    for k in range(horizon):
+        ret += (gamma ** k) * rewards[start + k]
+    return ret
+
+
+def _lambda_return(rewards: List[float], start: int, horizon: int, gamma: float, lam: float) -> float:
+    ret = 0.0
+    for n in range(1, horizon + 1):
+        n_ret = _n_step_return(rewards, start, n, gamma)
+        if n == horizon:
+            weight = lam ** (n - 1)
+        else:
+            weight = (1.0 - lam) * (lam ** (n - 1))
+        ret += weight * n_ret
+    return ret
 
 
 def main() -> None:
@@ -89,7 +140,7 @@ def main() -> None:
     records = _load_records(args.data)
     if not records:
         raise ValueError("No rollout records found.")
-    records = _attach_returns(records, args.gamma)
+    records = _attach_returns(records, args.gamma, args.n_step, args.lambda_return)
     obs_dim = len(records[0]["obs"])
 
     dataset = ValueDataset(records)

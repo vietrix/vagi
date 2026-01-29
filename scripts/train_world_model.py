@@ -1,4 +1,4 @@
-"""Train a world model head to predict next observation."""
+"""Train a world model head to predict future observations."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from envs.code_env.actions import ACTION_DIM, action_type_id, parse_action
 from vagi_core import VAGIConfig, VAGICore
+from vagi_core.losses import consistency_loss
 from scripts.utils import set_deterministic
 
 
@@ -51,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--obs-tokens", type=int, default=2)
     parser.add_argument("--memory-slots", type=int, default=4)
     parser.add_argument("--horizon", type=int, default=1)
+    parser.add_argument("--consistency-weight", type=float, default=0.0)
     return parser.parse_args()
 
 
@@ -152,6 +154,21 @@ def main() -> None:
             loss = out["loss"]
             if loss is None:
                 raise ValueError("Missing world loss.")
+
+            if args.consistency_weight > 0.0:
+                world_pred = out["world_pred"]
+                if world_pred is not None and world_pred.ndim == 3:
+                    value_steps = []
+                    for step_idx in range(world_pred.shape[1]):
+                        out_step = model.forward(
+                            input_ids=input_ids,
+                            obs=world_pred[:, step_idx, :],
+                            state=None,
+                            return_loss=False,
+                        )
+                        value_steps.append(out_step["value"])
+                    values = torch.stack(value_steps, dim=1)
+                    loss = loss + args.consistency_weight * consistency_loss(values)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
