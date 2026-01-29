@@ -30,7 +30,8 @@ def test_shapes_with_obs() -> None:
     state = model.init_state(bsz)
 
     out = model.forward(input_ids=input_ids, obs=obs, state=state)
-    seq_len = tlen + cfg.obs_tokens
+    extra = 3 if cfg.use_special_tokens and obs is not None else 0
+    seq_len = tlen + cfg.obs_tokens + extra
 
     assert out["text_logits"].shape == (bsz, seq_len, cfg.vocab_size)
     assert out["action_logits"].shape == (bsz, cfg.action_dim)

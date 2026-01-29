@@ -25,6 +25,7 @@ class VAGIConfig:
     use_gqa: bool = False
     use_flash_attn: bool = False
     use_world_pred: bool = False
+    use_special_tokens: bool = True
 
     def __post_init__(self) -> None:
         self.validate()

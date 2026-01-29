@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 from torch.distributions import Categorical
 
-from vagi_core import RecurrentState, VAGIConfig, VAGICore
+from vagi_core import KVCache, RecurrentState, VAGIConfig, VAGICore
 
 from scripts.toy_env import ToyEnv
 
@@ -48,8 +48,16 @@ def _mean(values: List[float]) -> float:
     return float(sum(values) / len(values))
 
 
+def _detach_kv(kv: KVCache) -> KVCache:
+    if kv.keys is None or kv.values is None:
+        return kv
+    keys = [k.detach() if k is not None else None for k in kv.keys]
+    values = [v.detach() if v is not None else None for v in kv.values]
+    return KVCache(keys=keys, values=values)
+
+
 def _detach_state(state: RecurrentState) -> RecurrentState:
-    return RecurrentState(mem=state.mem.detach(), kv=state.kv, timestep=state.timestep)
+    return RecurrentState(mem=state.mem.detach(), kv=_detach_kv(state.kv), timestep=state.timestep)
 
 
 def _step_with_grad(

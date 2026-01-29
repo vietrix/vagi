@@ -9,13 +9,20 @@ from torch.nn import functional as F
 
 
 def language_loss(
-    text_logits: torch.Tensor, labels: torch.Tensor, k_prefix: int = 0, ignore_index: int = -100
+    text_logits: torch.Tensor,
+    labels: torch.Tensor,
+    k_prefix: int = 0,
+    k_suffix: int = 0,
+    ignore_index: int = -100,
 ) -> torch.Tensor:
     if labels.dtype != torch.long:
         raise TypeError("labels must be torch.long")
     if k_prefix < 0:
         raise ValueError("k_prefix must be >= 0")
-    logits = text_logits[:, k_prefix:, :]
+    if k_suffix < 0:
+        raise ValueError("k_suffix must be >= 0")
+    end = text_logits.shape[1] - k_suffix if k_suffix else text_logits.shape[1]
+    logits = text_logits[:, k_prefix:end, :]
     if logits.shape[1] != labels.shape[1]:
         raise ValueError("labels length must match text token length")
     vocab_size = logits.shape[-1]

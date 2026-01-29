@@ -38,7 +38,7 @@ class VAGICore(nn.Module):
             device=device,
             dtype=dtype,
         )
-        kv = KVCache()
+        kv = KVCache.empty(self.cfg.n_layers)
         return RecurrentState(mem=mem, kv=kv, timestep=0)
 
     def forward(
@@ -64,11 +64,12 @@ class VAGICore(nn.Module):
                 raise TypeError("state must be a RecurrentState")
             check_shape(state.mem, (input_ids.shape[0], self.cfg.memory_slots, self.cfg.hidden_size), "state.mem")
 
-        x, h_last, mem_next = self.backbone(input_ids=input_ids, obs=obs, state=state)
+        x, h_last, h_act, mem_next = self.backbone(input_ids=input_ids, obs=obs, state=state)
 
         text_logits = self.lang(x)
-        action_logits = self.pi(h_last)
-        value = self.v(h_last)
+        h_policy = h_act if h_act is not None else h_last
+        action_logits = self.pi(h_policy)
+        value = self.v(h_policy)
         world_pred = self.world(h_last) if self.world is not None else None
 
         state_out = None
@@ -92,8 +93,10 @@ class VAGICore(nn.Module):
             if labels is not None:
                 if labels.dtype != torch.long:
                     raise TypeError("labels must be torch.long")
-                k_prefix = self.cfg.obs_tokens if obs is not None else 0
-                losses["language"] = language_loss(text_logits, labels, k_prefix=k_prefix)
+                include_special = self.cfg.use_special_tokens and obs is not None
+                k_prefix = self.cfg.obs_tokens + (1 if include_special else 0) if obs is not None else 0
+                k_suffix = 2 if include_special else 0
+                losses["language"] = language_loss(text_logits, labels, k_prefix=k_prefix, k_suffix=k_suffix)
             targets = targets or {}
             if "actions" in targets:
                 losses["policy"] = policy_loss(action_logits, targets["actions"])
@@ -118,12 +121,30 @@ class VAGICore(nn.Module):
             raise ValueError("state is required for step()")
         if obs is None:
             raise ValueError("obs is required for step()")
-        outputs = self.forward(input_ids=input_ids, obs=obs, state=state, return_loss=False)
+        x, h_last, h_act, mem_next, kv_next = self.backbone.forward_step(
+            input_ids=input_ids,
+            obs=obs,
+            state=state,
+        )
+        h_policy = h_act if h_act is not None else h_last
+        outputs: Dict[str, Any] = {
+            "text_logits": self.lang(x),
+            "action_logits": self.pi(h_policy),
+            "value": self.v(h_policy),
+            "world_pred": self.world(h_last) if self.world is not None else None,
+            "state": None,
+        }
         if outputs["state"] is not None:
             state_out = outputs["state"]
             outputs["state"] = RecurrentState(
                 mem=state_out.mem,
                 kv=state_out.kv,
                 timestep=state_out.timestep + 1,
+            )
+        else:
+            outputs["state"] = RecurrentState(
+                mem=mem_next if mem_next is not None else state.mem,
+                kv=kv_next,
+                timestep=state.timestep + 1,
             )
         return outputs
