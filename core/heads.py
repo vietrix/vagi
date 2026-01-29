@@ -50,6 +50,17 @@ class ConfidenceHead(nn.Module):
         return torch.sigmoid(self.proj(h_last))
 
 
+class LogVarHead(nn.Module):
+    """Predict a log-variance value for Gaussian uncertainty."""
+
+    def __init__(self, hidden_size: int, out_dim: int = 1) -> None:
+        super().__init__()
+        self.proj = nn.Linear(hidden_size, out_dim)
+
+    def forward(self, h_last: torch.Tensor) -> torch.Tensor:
+        return self.proj(h_last)
+
+
 class WorldHead(nn.Module):
     """Project a pooled hidden state to multi-step observation prediction."""
 

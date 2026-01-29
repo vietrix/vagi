@@ -9,7 +9,7 @@ from torch import nn
 
 from .backbone import CausalTransformerBackbone
 from .config import VAGIConfig
-from .heads import ConfidenceHead, LanguageHead, PolicyHead, ValueHead, WorldHead
+from .heads import LanguageHead, LogVarHead, PolicyHead, ValueHead, WorldHead
 from .losses import language_loss, policy_loss, total_loss, value_loss, world_loss
 from .memory import KVCache, RecurrentState
 from .utils import check_floating, check_shape
@@ -25,15 +25,15 @@ class VAGICore(nn.Module):
         self.lang = LanguageHead(cfg.hidden_size, cfg.vocab_size)
         self.pi = PolicyHead(cfg.hidden_size, cfg.action_dim)
         self.v = ValueHead(cfg.hidden_size)
-        self.value_conf = ConfidenceHead(cfg.hidden_size, 1) if cfg.use_confidence else None
+        self.value_logvar = LogVarHead(cfg.hidden_size, 1) if cfg.use_uncertainty else None
         self.world = (
             WorldHead(cfg.hidden_size, cfg.obs_dim, horizon=cfg.world_model_horizon)
             if cfg.use_world_pred
             else None
         )
-        self.world_conf = (
-            ConfidenceHead(cfg.hidden_size, cfg.world_model_horizon)
-            if cfg.use_confidence and cfg.use_world_pred
+        self.world_logvar = (
+            LogVarHead(cfg.hidden_size, cfg.obs_dim * cfg.world_model_horizon)
+            if cfg.use_uncertainty and cfg.use_world_pred
             else None
         )
 
@@ -104,9 +104,11 @@ class VAGICore(nn.Module):
         h_policy = h_act if h_act is not None else h_last
         action_logits = self.pi(h_policy)
         value = self.v(h_policy)
-        value_conf = self.value_conf(h_policy) if self.value_conf is not None else None
         world_pred = self.world(h_last) if self.world is not None else None
-        world_conf = self.world_conf(h_last) if self.world_conf is not None else None
+        value_logvar = self.value_logvar(h_policy) if self.value_logvar is not None else None
+        world_logvar = self._format_world_logvar(h_last) if self.world_logvar is not None else None
+        value_logvar = self._apply_obs_uncertainty(value_logvar, obs)
+        world_logvar = self._apply_obs_uncertainty(world_logvar, obs)
 
         state_out = None
         if state is not None:
@@ -120,9 +122,9 @@ class VAGICore(nn.Module):
             "text_logits": text_logits,
             "action_logits": action_logits,
             "value": value,
-            "value_conf": value_conf,
+            "value_logvar": value_logvar,
             "world_pred": world_pred,
-            "world_conf": world_conf,
+            "world_logvar": world_logvar,
             "state": state_out,
         }
 
@@ -139,12 +141,12 @@ class VAGICore(nn.Module):
             if "actions" in targets:
                 losses["policy"] = policy_loss(action_logits, targets["actions"])
             if "values" in targets:
-                losses["value"] = value_loss(value, targets["values"])
+                losses["value"] = value_loss(value, targets["values"], logvar=value_logvar)
             if world_pred is not None:
                 if "obs_future" in targets:
-                    losses["world"] = world_loss(world_pred, targets["obs_future"])
+                    losses["world"] = world_loss(world_pred, targets["obs_future"], logvar=world_logvar)
                 elif "obs_next" in targets:
-                    losses["world"] = world_loss(world_pred, targets["obs_next"])
+                    losses["world"] = world_loss(world_pred, targets["obs_next"], logvar=world_logvar)
 
             if losses:
                 outputs["loss"] = total_loss(losses, weights=targets.get("loss_weights"))
@@ -172,11 +174,15 @@ class VAGICore(nn.Module):
             "text_logits": self.lang(x),
             "action_logits": self.pi(h_policy),
             "value": self.v(h_policy),
-            "value_conf": self.value_conf(h_policy) if self.value_conf is not None else None,
+            "value_logvar": None,
             "world_pred": self.world(h_last) if self.world is not None else None,
-            "world_conf": self.world_conf(h_last) if self.world_conf is not None else None,
+            "world_logvar": None,
             "state": None,
         }
+        if self.value_logvar is not None:
+            outputs["value_logvar"] = self._apply_obs_uncertainty(self.value_logvar(h_policy), obs)
+        if self.world_logvar is not None:
+            outputs["world_logvar"] = self._apply_obs_uncertainty(self._format_world_logvar(h_last), obs)
         if outputs["state"] is not None:
             state_out = outputs["state"]
             outputs["state"] = RecurrentState(
@@ -200,7 +206,7 @@ class VAGICore(nn.Module):
         state: RecurrentState,
         num_candidates: int = 4,
         horizon: int = 3,
-        confidence_weight: float = 1.0,
+        uncertainty_weight: float = 1.0,
     ) -> Dict[str, Any]:
         """Plan a single action by rolling out the world model and scoring with value."""
         if num_candidates <= 0:
@@ -227,28 +233,35 @@ class VAGICore(nn.Module):
                 obs_roll = obs[b : b + 1]
                 state_roll = self._slice_state(state, b)
                 value = None
-                conf_score = None
+                uncertainty = 0.0
+                uncertainty_steps = 0
                 for _ in range(horizon):
                     out = self.step(input_ids=action, obs=obs_roll, state=state_roll)
                     world_pred = out["world_pred"]
-                    world_conf = out.get("world_conf")
+                    world_logvar = out.get("world_logvar")
+                    value_logvar = out.get("value_logvar")
                     if world_pred is None:
                         break
                     if world_pred.ndim == 3:
                         obs_roll = world_pred[:, 0, :]
                     else:
                         obs_roll = world_pred
-                    if world_conf is not None:
-                        if world_conf.ndim == 2:
-                            conf_score = world_conf.mean()
+                    if world_logvar is not None:
+                        if world_logvar.ndim == 3:
+                            step_uncert = torch.exp(world_logvar[:, 0, :]).mean()
                         else:
-                            conf_score = world_conf.mean()
+                            step_uncert = torch.exp(world_logvar).mean()
+                        uncertainty += float(step_uncert.item())
+                        uncertainty_steps += 1
+                    if value_logvar is not None:
+                        uncertainty += float(torch.exp(value_logvar).mean().item())
+                        uncertainty_steps += 1
                     state_roll = out["state"]
                     value = out["value"]
                 if value is not None:
                     score = value.squeeze()
-                    if conf_score is not None:
-                        score = score - confidence_weight * (1.0 - conf_score)
+                    if uncertainty_steps > 0:
+                        score = score - uncertainty_weight * (uncertainty / uncertainty_steps)
                     candidate_values[b, c] = score
 
         best_idx = torch.argmax(candidate_values, dim=-1)
@@ -271,3 +284,24 @@ class VAGICore(nn.Module):
             values = [v[index : index + 1].clone() if v is not None else None for v in state.kv.values]
         kv = KVCache(keys=keys, values=values, max_len=state.kv.max_len)
         return RecurrentState(mem=mem, kv=kv, timestep=state.timestep)
+
+    def _format_world_logvar(self, h_last: torch.Tensor) -> torch.Tensor:
+        raw = self.world_logvar(h_last) if self.world_logvar is not None else None
+        if raw is None:
+            raise ValueError("world_logvar head is not initialized")
+        return raw.view(h_last.shape[0], self.cfg.world_model_horizon, self.cfg.obs_dim)
+
+    def _apply_obs_uncertainty(
+        self,
+        logvar: Optional[torch.Tensor],
+        obs: Optional[torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        if logvar is None or obs is None or self.cfg.uncertainty_obs_scale <= 0.0:
+            return logvar
+        obs_var = obs.var(dim=-1, keepdim=True) * self.cfg.uncertainty_obs_scale
+        if logvar.ndim == 2:
+            return logvar + obs_var
+        if logvar.ndim == 3:
+            scaled = obs_var[:, None, :].expand(-1, logvar.shape[1], logvar.shape[2])
+            return logvar + scaled
+        return logvar

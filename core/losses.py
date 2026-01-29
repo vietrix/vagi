@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 from torch.nn import functional as F
@@ -41,16 +41,37 @@ def policy_loss(action_logits: torch.Tensor, action_targets: torch.Tensor) -> to
     return F.mse_loss(action_logits, action_targets)
 
 
-def value_loss(value: torch.Tensor, value_targets: torch.Tensor) -> torch.Tensor:
-    return F.mse_loss(value, value_targets)
+def gaussian_nll_loss(
+    mean: torch.Tensor,
+    logvar: torch.Tensor,
+    target: torch.Tensor,
+    clamp: Tuple[float, float] = (-10.0, 10.0),
+) -> torch.Tensor:
+    logvar = torch.clamp(logvar, min=clamp[0], max=clamp[1])
+    inv_var = torch.exp(-logvar)
+    return 0.5 * torch.mean((target - mean) ** 2 * inv_var + logvar)
 
 
-def world_loss(world_pred: torch.Tensor, obs_next: torch.Tensor) -> torch.Tensor:
+def value_loss(value: torch.Tensor, value_targets: torch.Tensor, logvar: Optional[torch.Tensor] = None) -> torch.Tensor:
+    if logvar is None:
+        return F.mse_loss(value, value_targets)
+    return gaussian_nll_loss(value, logvar, value_targets)
+
+
+def world_loss(
+    world_pred: torch.Tensor,
+    obs_next: torch.Tensor,
+    logvar: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
     if world_pred.ndim == 3 and obs_next.ndim == 2:
-        return F.mse_loss(world_pred[:, 0, :], obs_next)
-    if world_pred.ndim == 3 and obs_next.ndim == 3:
-        return F.mse_loss(world_pred, obs_next)
-    return F.mse_loss(world_pred, obs_next)
+        mean = world_pred[:, 0, :]
+    else:
+        mean = world_pred
+    if logvar is None:
+        return F.mse_loss(mean, obs_next)
+    if logvar.ndim == 3 and obs_next.ndim == 2:
+        logvar = logvar[:, 0, :]
+    return gaussian_nll_loss(mean, logvar, obs_next)
 
 
 def total_loss(losses: Dict[str, torch.Tensor], weights: Optional[Dict[str, float]] = None) -> torch.Tensor:
@@ -77,3 +98,14 @@ def consistency_loss(values: torch.Tensor, anchor: Optional[torch.Tensor] = None
     if anchor.shape[0] != values.shape[0]:
         raise ValueError("anchor batch size mismatch")
     return F.mse_loss(values, anchor.expand_as(values))
+
+
+def drift_loss(values: torch.Tensor, max_delta: float = 1.0) -> torch.Tensor:
+    """Penalize large step-to-step drift in value predictions."""
+    if values.ndim == 2:
+        values = values.unsqueeze(-1)
+    if values.ndim != 3:
+        raise ValueError("values must have shape (B, K, 1) or (B, K)")
+    deltas = torch.abs(values[:, 1:, :] - values[:, :-1, :])
+    penalty = torch.relu(deltas - max_delta)
+    return torch.mean(penalty ** 2)

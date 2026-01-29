@@ -27,9 +27,13 @@ class VAGIConfig:
     use_world_pred: bool = False
     world_model_horizon: int = 1
     use_confidence: bool = False
+    use_uncertainty: bool = False
+    uncertainty_obs_scale: float = 0.0
     use_special_tokens: bool = True
 
     def __post_init__(self) -> None:
+        if self.use_confidence and not self.use_uncertainty:
+            self.use_uncertainty = True
         self.validate()
 
     @property
@@ -65,5 +69,7 @@ class VAGIConfig:
             raise ValueError("memory_slots must be >= 0")
         if self.world_model_horizon <= 0:
             raise ValueError("world_model_horizon must be > 0")
+        if self.uncertainty_obs_scale < 0.0:
+            raise ValueError("uncertainty_obs_scale must be >= 0")
         if not (0.0 <= self.dropout < 1.0):
             raise ValueError("dropout must be in [0, 1)")

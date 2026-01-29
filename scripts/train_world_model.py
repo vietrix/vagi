@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from envs.code_env.actions import ACTION_DIM, action_type_id, parse_action
 from vagi_core import VAGIConfig, VAGICore
-from vagi_core.losses import consistency_loss
+from vagi_core.losses import consistency_loss, drift_loss
 from scripts.utils import set_deterministic
 
 
@@ -53,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--memory-slots", type=int, default=4)
     parser.add_argument("--horizon", type=int, default=1)
     parser.add_argument("--consistency-weight", type=float, default=0.0)
+    parser.add_argument("--drift-weight", type=float, default=0.0)
+    parser.add_argument("--drift-threshold", type=float, default=1.0)
     return parser.parse_args()
 
 
@@ -155,7 +157,7 @@ def main() -> None:
             if loss is None:
                 raise ValueError("Missing world loss.")
 
-            if args.consistency_weight > 0.0:
+            if args.consistency_weight > 0.0 or args.drift_weight > 0.0:
                 world_pred = out["world_pred"]
                 if world_pred is not None and world_pred.ndim == 3:
                     value_steps = []
@@ -168,7 +170,10 @@ def main() -> None:
                         )
                         value_steps.append(out_step["value"])
                     values = torch.stack(value_steps, dim=1)
-                    loss = loss + args.consistency_weight * consistency_loss(values)
+                    if args.consistency_weight > 0.0:
+                        loss = loss + args.consistency_weight * consistency_loss(values)
+                    if args.drift_weight > 0.0:
+                        loss = loss + args.drift_weight * drift_loss(values, max_delta=args.drift_threshold)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
