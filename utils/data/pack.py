@@ -16,6 +16,7 @@ def pack_batches(
     horizon: int,
     gamma: float,
     task_id: int | None = None,
+    gae_lambda: float | None = None,
 ) -> Iterator[Dict[str, torch.Tensor]]:
     """Yield packed batches from a stream of rollout records."""
     if batch_size <= 0:
@@ -27,7 +28,9 @@ def pack_batches(
 
     buffer: List[Dict[str, torch.Tensor]] = []
     for episode in _iter_episodes(records):
-        samples = _episode_to_samples(episode, horizon=horizon, gamma=gamma, task_id=task_id)
+        samples = _episode_to_samples(
+            episode, horizon=horizon, gamma=gamma, task_id=task_id, gae_lambda=gae_lambda
+        )
         for sample in samples:
             buffer.append(sample)
             if len(buffer) >= batch_size:
@@ -62,11 +65,18 @@ def _episode_to_samples(
     horizon: int,
     gamma: float,
     task_id: int | None,
+    gae_lambda: float | None,
 ) -> List[Dict[str, torch.Tensor]]:
     obs_dim = len(episode[0].obs)
     obs_seq = [record.obs for record in episode]
     rewards = [float(record.reward) for record in episode]
-    returns = _compute_returns(rewards, gamma)
+    values = [float(record.value) if record.value is not None else 0.0 for record in episode]
+    use_gae = gae_lambda is not None and all(record.value is not None for record in episode)
+    if use_gae:
+        advantages, returns = _compute_gae(rewards, values, gamma, float(gae_lambda))
+    else:
+        returns = _compute_returns(rewards, gamma)
+        advantages = None
     samples: List[Dict[str, torch.Tensor]] = []
 
     for idx, record in enumerate(episode):
@@ -81,7 +91,7 @@ def _episode_to_samples(
                 future_obs.append([0.0 for _ in range(obs_dim)])
                 masks.append(0.0)
 
-        sample = {
+        sample: Dict[str, torch.Tensor] = {
             "obs": torch.tensor(record.obs, dtype=torch.float32),
             "obs_future": torch.tensor(future_obs, dtype=torch.float32),
             "actions": torch.tensor(record.action, dtype=torch.long),
@@ -89,6 +99,8 @@ def _episode_to_samples(
             "rewards": torch.tensor([record.reward], dtype=torch.float32),
             "mask": torch.tensor(masks, dtype=torch.float32),
         }
+        if advantages is not None:
+            sample["advantages"] = torch.tensor([advantages[idx]], dtype=torch.float32)
         if task_id is not None:
             sample["task_id"] = torch.tensor(task_id, dtype=torch.long)
         samples.append(sample)
@@ -115,4 +127,25 @@ def _collate(samples: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     }
     if "task_id" in samples[0]:
         batch["task_id"] = torch.stack([s["task_id"] for s in samples], dim=0)
+    if "advantages" in samples[0]:
+        batch["advantages"] = torch.stack([s["advantages"] for s in samples], dim=0)
     return batch
+
+
+def _compute_gae(
+    rewards: List[float],
+    values: List[float],
+    gamma: float,
+    gae_lambda: float,
+) -> tuple[List[float], List[float]]:
+    advantages = [0.0 for _ in rewards]
+    returns = [0.0 for _ in rewards]
+    gae = 0.0
+    next_value = 0.0
+    for idx in range(len(rewards) - 1, -1, -1):
+        delta = rewards[idx] + gamma * next_value - values[idx]
+        gae = delta + gamma * gae_lambda * gae
+        advantages[idx] = gae
+        returns[idx] = gae + values[idx]
+        next_value = values[idx]
+    return advantages, returns

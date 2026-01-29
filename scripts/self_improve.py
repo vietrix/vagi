@@ -32,6 +32,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-uncertainty", type=float, default=10.0)
     parser.add_argument("--top-fraction", type=float, default=0.5)
     parser.add_argument("--uncertainty-weight", type=float, default=1.0)
+    parser.add_argument("--novelty-weight", type=float, default=0.0)
+    parser.add_argument("--success-weight", type=float, default=0.0)
     parser.add_argument("--horizon", type=int, default=3)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -42,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--world-weight", type=float, default=1.0)
     parser.add_argument("--weight-clip", type=float, default=20.0)
     parser.add_argument("--awbc-temp", type=float, default=0.5)
+    parser.add_argument("--gae-lambda", type=float, default=None)
     parser.add_argument("--anchor", type=str, default=None)
     parser.add_argument("--anchor-weight", type=float, default=0.0)
     parser.add_argument("--bf16", action="store_true")
@@ -111,6 +114,8 @@ def _rollout_episode(
     total_reward = 0.0
     total_uncertainty = 0.0
     count_uncertainty = 0
+    novelty = 0.0
+    prev_obs = None
     last_action = 0
 
     for t in range(steps):
@@ -136,13 +141,17 @@ def _rollout_episode(
         total_uncertainty += uncertainty
         count_uncertainty += 1
         obs = next_obs
+        if prev_obs is not None:
+            novelty += float(torch.mean(torch.abs(obs - prev_obs)).item())
+        prev_obs = obs
         state = out["state"]
         last_action = action
         if done:
             break
 
     mean_uncertainty = total_uncertainty / max(count_uncertainty, 1)
-    return records, total_reward, mean_uncertainty
+    mean_novelty = novelty / max(len(records), 1)
+    return records, total_reward, mean_uncertainty, mean_novelty
 
 
 def _write_jsonl(path: Path, records: List[Dict[str, object]]) -> None:
@@ -151,8 +160,17 @@ def _write_jsonl(path: Path, records: List[Dict[str, object]]) -> None:
             handle.write(json.dumps(record) + "\n")
 
 
-def _score_episode(reward: float, uncertainty: float, weight: float) -> float:
-    return reward - weight * uncertainty
+def _score_episode(
+    reward: float,
+    uncertainty: float,
+    novelty: float,
+    *,
+    uncertainty_weight: float,
+    novelty_weight: float,
+    success_weight: float,
+) -> float:
+    success_bonus = success_weight if reward > 0.0 else 0.0
+    return reward - uncertainty_weight * uncertainty + novelty_weight * novelty + success_bonus
 
 
 def main() -> None:
@@ -184,21 +202,28 @@ def main() -> None:
     model.eval()
 
     all_records: List[Dict[str, object]] = []
-    episode_scores: List[Tuple[str, float, float, float]] = []
+    episode_scores: List[Tuple[str, float, float, float, float]] = []
     for ep in range(args.episodes):
         env = ToyEnv(obs_dim=args.obs_dim, action_dim=args.action_dim, max_steps=args.steps, seed=args.seed + ep)
         episode_id = f"ep-{ep:04d}"
-        records, reward, uncertainty = _rollout_episode(
+        records, reward, uncertainty, novelty = _rollout_episode(
             model, env, episode_id=episode_id, steps=args.steps, temperature=args.temperature
         )
-        score = _score_episode(reward, uncertainty, args.uncertainty_weight)
-        episode_scores.append((episode_id, reward, uncertainty, score))
+        score = _score_episode(
+            reward,
+            uncertainty,
+            novelty,
+            uncertainty_weight=args.uncertainty_weight,
+            novelty_weight=args.novelty_weight,
+            success_weight=args.success_weight,
+        )
+        episode_scores.append((episode_id, reward, uncertainty, novelty, score))
         all_records.extend(records)
 
     rollouts_path = out_dir / "rollouts.jsonl"
     _write_jsonl(rollouts_path, all_records)
 
-    episode_scores.sort(key=lambda item: item[3], reverse=True)
+    episode_scores.sort(key=lambda item: item[4], reverse=True)
     top_count = max(1, int(len(episode_scores) * args.top_fraction))
     accepted = [
         ep for ep in episode_scores[:top_count] if ep[1] >= args.min_reward and ep[2] <= args.max_uncertainty
@@ -223,6 +248,7 @@ def main() -> None:
             batch_size=args.batch_size,
             horizon=args.horizon,
             gamma=args.gamma,
+            gae_lambda=args.gae_lambda,
         )
         for batch in batch_iter:
             obs = batch["obs"]
@@ -249,7 +275,10 @@ def main() -> None:
             if mean is None:
                 raise ValueError("world_pred required for self-improvement distill")
 
-            advantages = returns - values.detach()
+            if "advantages" in batch:
+                advantages = batch["advantages"]
+            else:
+                advantages = returns - values.detach()
             adv_scaled = torch.clamp(advantages / max(args.awbc_temp, 1e-6), min=-20.0, max=20.0)
             weights = torch.exp(adv_scaled).clamp(max=args.weight_clip).squeeze(-1)
             ce = F.cross_entropy(logits, actions, reduction="none")

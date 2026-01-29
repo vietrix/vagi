@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--grad-checkpoint", action="store_true")
     parser.add_argument("--obs-noise-std", type=float, default=0.0)
+    parser.add_argument("--gae-lambda", type=float, default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--vocab-size", type=int, default=128)
@@ -105,6 +106,7 @@ def main() -> None:
             batch_size=args.batch_size,
             horizon=args.horizon,
             gamma=args.gamma,
+            gae_lambda=args.gae_lambda,
         )
         for batch in batch_iter:
             obs = batch["obs"]
@@ -123,7 +125,10 @@ def main() -> None:
 
             logits = out["action_logits"]
             values = out["value"]
-            advantages = returns - values.detach()
+            if "advantages" in batch:
+                advantages = batch["advantages"]
+            else:
+                advantages = returns - values.detach()
             adv_scaled = torch.clamp(advantages / max(args.temperature, 1e-6), min=-20.0, max=20.0)
             weights = torch.exp(adv_scaled).clamp(max=args.weight_clip).squeeze(-1)
 
