@@ -19,6 +19,8 @@ ACTION_TYPES = (
     "PLAN_VERIFY",
 )
 ACTION_DIM = len(ACTION_TYPES)
+INFO_ACTION_TYPES = {"READ_FILE", "LIST_DIR", "SEARCH", "RUN_TESTS"}
+SOLVE_ACTION_TYPES = {"APPLY_PATCH"}
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,43 @@ def action_type_id(action: Action) -> int:
     if isinstance(action, PlanVerifyAction):
         return 8
     return -1
+
+
+def action_type_name(action: Action | str) -> str:
+    if isinstance(action, str):
+        return action_type_name(parse_action(action))
+    if isinstance(action, RunTestsAction):
+        return "RUN_TESTS"
+    if isinstance(action, ReadFileAction):
+        return "READ_FILE"
+    if isinstance(action, ListDirAction):
+        return "LIST_DIR"
+    if isinstance(action, SearchAction):
+        return "SEARCH"
+    if isinstance(action, ApplyPatchAction):
+        return "APPLY_PATCH"
+    if isinstance(action, PlanReadErrorsAction):
+        return "PLAN_READ_ERRORS"
+    if isinstance(action, PlanLocateSourceAction):
+        return "PLAN_LOCATE_SOURCE"
+    if isinstance(action, PlanPatchAction):
+        return "PLAN_PATCH"
+    if isinstance(action, PlanVerifyAction):
+        return "PLAN_VERIFY"
+    return "UNKNOWN"
+
+
+def is_info_action(action: Action | str) -> bool:
+    return action_type_name(action) in INFO_ACTION_TYPES
+
+
+def action_group(action: Action | str) -> str:
+    name = action_type_name(action)
+    if name in INFO_ACTION_TYPES:
+        return "observe"
+    if name in SOLVE_ACTION_TYPES:
+        return "solve"
+    return "plan"
 
 
 class ActionTokenizer:

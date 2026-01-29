@@ -24,6 +24,8 @@ from .actions import (
     ReadFileAction,
     RunTestsAction,
     SearchAction,
+    action_group,
+    is_info_action,
     action_type_id,
     parse_action,
     serialize_action,
@@ -48,6 +50,7 @@ class CodeEnv:
         repo_path: str | Path | None = None,
         copy_repo: bool = True,
         require_read_before_write: bool = True,
+        info_reward_bonus: float = 0.5,
     ) -> None:
         if obs_dim <= 0:
             raise ValueError("obs_dim must be > 0")
@@ -67,6 +70,7 @@ class CodeEnv:
         self.seed_value = seed
         self.copy_repo = copy_repo
         self.require_read_before_write = require_read_before_write
+        self.info_reward_bonus = info_reward_bonus
         self.workspace_root = Path(__file__).resolve().parent / "fixtures"
         self.fixture_root = Path(repo_path) if repo_path is not None else self._fixture_path()
         if not self.fixture_root.resolve().is_relative_to(self.workspace_root):
@@ -81,6 +85,8 @@ class CodeEnv:
         self.last_changed_files = 0
         self.last_patch_applied = False
         self.last_output_len = 0
+        self.last_info_action = False
+        self.prev_info_action = False
         self.run_tests_count = 0
         self.step_count = 0
         self.initial_fail_count = 0
@@ -106,6 +112,8 @@ class CodeEnv:
         self.last_changed_files = 0
         self.last_patch_applied = False
         self.last_output_len = min(len(self.last_output), self.max_output_chars)
+        self.last_info_action = False
+        self.prev_info_action = False
         _digest_text, digest = _tree_digest(self.repo_path)
         self._last_digest = digest
         self._total_files = len(digest)
@@ -120,6 +128,8 @@ class CodeEnv:
         self.last_patch_applied = False
         self.last_tool_ok = False
         self.last_action_id = action_type_id(parsed)
+        self.prev_info_action = self.last_info_action
+        self.last_info_action = is_info_action(parsed)
 
         if isinstance(parsed, ReadFileAction):
             self.last_output = self._read_file(parsed.path)
@@ -166,6 +176,8 @@ class CodeEnv:
                 self.last_tool_ok = True
                 if self.last_fail_count < prev_fail:
                     reward += 1.0
+                    if self.prev_info_action:
+                        reward += self.info_reward_bonus
                 if self.last_fail_count == 0:
                     reward += 10.0
                     done = True
@@ -190,6 +202,8 @@ class CodeEnv:
                 "run_tests_count": self.run_tests_count,
                 "changed_files": self.last_changed_files,
                 "plan_state": self.plan_state,
+                "info_action": self.last_info_action,
+                "action_group": action_group(parsed),
             }
         )
         return obs, reward, done, info
