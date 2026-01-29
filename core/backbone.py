@@ -36,14 +36,33 @@ class FastMemory(nn.Module):
     def __init__(self, hidden_size: int, memory_slots: int) -> None:
         super().__init__()
         self.memory_slots = memory_slots
-        self.gate = nn.Linear(hidden_size, memory_slots)
+        self.query = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.key = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.value = nn.Linear(hidden_size, hidden_size, bias=False)
         self.write = nn.Linear(hidden_size, hidden_size)
+        self.erase = nn.Linear(hidden_size, memory_slots)
 
     def forward(self, mem: torch.Tensor, h_last: torch.Tensor) -> torch.Tensor:
         check_shape(mem, (None, self.memory_slots, None), "mem")
-        gate = torch.sigmoid(self.gate(h_last)).unsqueeze(-1)
-        write = self.write(h_last).unsqueeze(1)
-        return mem + gate * write
+        if self.memory_slots == 0:
+            return mem
+
+        q = self.query(h_last)  # (B, D)
+        k = self.key(mem)  # (B, M, D)
+        v = self.value(mem)  # (B, M, D)
+
+        scale = k.shape[-1] ** 0.5
+        attn_scores = (k * q.unsqueeze(1)).sum(dim=-1) / scale
+        attn_weights = torch.softmax(attn_scores, dim=-1)  # (B, M)
+
+        write = self.write(h_last)  # (B, D)
+        erase = torch.sigmoid(self.erase(h_last))  # (B, M)
+
+        write_update = attn_weights.unsqueeze(-1) * write.unsqueeze(1)
+        erase_mask = erase.unsqueeze(-1) * attn_weights.unsqueeze(-1)
+        mem = mem * (1.0 - erase_mask) + write_update
+        _ = (attn_weights.unsqueeze(-1) * v).sum(dim=1)
+        return mem
 
 
 SPECIAL_TOKENS = ("<OBS>", "<ACT>", "<VAL>")
