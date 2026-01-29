@@ -128,6 +128,8 @@ def plan_action(
             world_pred = out["world_pred"]
             if world_pred is None:
                 break
+            if world_pred.ndim == 3:
+                world_pred = world_pred[:, 0, :]
             sim_obs = world_pred.squeeze(0)
             sim_state = out["state"]
             reward, done = _reward_from_obs(sim_obs)

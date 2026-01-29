@@ -73,7 +73,10 @@ def _run_config(
             total_steps += 1
 
             if out["world_pred"] is not None:
-                world_pred = out["world_pred"].squeeze(0)
+                world_pred = out["world_pred"]
+                if world_pred.ndim == 3:
+                    world_pred = world_pred[:, 0, :]
+                world_pred = world_pred.squeeze(0)
                 target_obs = step_result.obs.to(device)
                 total_world_mse += float(torch.mean((world_pred - target_obs) ** 2).item())
                 world_count += 1

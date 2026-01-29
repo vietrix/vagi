@@ -56,7 +56,10 @@ def _run_episode(env: ToyEnv, model: VAGICore, episode_length: int) -> Dict[str,
         total_reward += float(step_result.reward)
 
         if out["world_pred"] is not None:
-            pred = out["world_pred"].squeeze(0)
+            pred = out["world_pred"]
+            if pred.ndim == 3:
+                pred = pred[:, 0, :]
+            pred = pred.squeeze(0)
             target = step_result.obs
             total_mse += float(torch.mean((pred - target) ** 2).item())
             mse_count += 1
