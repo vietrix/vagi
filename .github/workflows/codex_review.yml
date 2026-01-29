@@ -1,0 +1,212 @@
+name: codex-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  codex-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate review trigger
+        id: gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const core = require('@actions/core');
+            const {context, github} = require('@actions/github');
+            let runReview = false;
+            let pr = null;
+
+            if (context.eventName === 'pull_request') {
+              pr = context.payload.pull_request;
+              const labels = (pr.labels || []).map(l => l.name);
+              const hasLabel = labels.includes('ai-review') || labels.includes('codex-review');
+              runReview = !pr.draft && hasLabel;
+            } else if (context.eventName === 'issue_comment') {
+              const body = (context.payload.comment.body || '').trim();
+              const isTrigger = body === '/ai-review' || body === 'Codex Review';
+              if (!context.payload.issue.pull_request || !isTrigger) {
+                runReview = false;
+              } else {
+                const prNumber = context.payload.issue.number;
+                const prResp = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                });
+                pr = prResp.data;
+                runReview = !pr.draft;
+              }
+            }
+
+            if (!pr) {
+              core.setOutput('run_review', 'false');
+              return;
+            }
+
+            core.setOutput('run_review', runReview ? 'true' : 'false');
+            core.setOutput('pr_number', String(pr.number));
+            core.setOutput('base_ref', pr.base.ref);
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('head_repo', pr.head.repo.full_name);
+            core.setOutput('title', pr.title || '');
+            core.setOutput('body', pr.body || '');
+
+      - name: Check API key
+        id: keycheck
+        if: steps.gate.outputs.run_review == 'true'
+        run: |
+          if [ -z "${OPENAI_API_KEY}" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Checkout PR
+        if: steps.gate.outputs.run_review == 'true' && steps.keycheck.outputs.available == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.gate.outputs.head_repo }}
+          ref: ${{ steps.gate.outputs.head_sha }}
+          fetch-depth: 1
+
+      - name: Fetch base ref
+        if: steps.gate.outputs.run_review == 'true' && steps.keycheck.outputs.available == 'true'
+        run: git fetch origin "${BASE_REF}" --depth=1
+        env:
+          BASE_REF: ${{ steps.gate.outputs.base_ref }}
+
+      - name: Build Codex input
+        if: steps.gate.outputs.run_review == 'true' && steps.keycheck.outputs.available == 'true'
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+
+          base_ref = os.environ["BASE_REF"]
+          pr_title = os.environ.get("PR_TITLE", "")
+          pr_body = os.environ.get("PR_BODY", "")
+          diff_range = f"origin/{base_ref}...HEAD"
+
+          def run(cmd):
+            return subprocess.check_output(cmd, text=True)
+
+          changed_files = run(["git", "diff", "--name-only", diff_range]).splitlines()
+          numstat = run(["git", "diff", "--numstat", diff_range]).splitlines()
+          stats = []
+          total_lines = 0
+          for line in numstat:
+            parts = line.split("\t")
+            if len(parts) < 3:
+              continue
+            add, delete, path = parts[0], parts[1], parts[2]
+            try:
+              lines = int(add) + int(delete)
+            except ValueError:
+              lines = 0
+            stats.append((path, lines))
+            total_lines += lines
+
+          important_prefixes = ("core/", "runtime/", "io/", "scripts/", "tests/")
+          include = {path for path, _ in stats if path.startswith(important_prefixes)}
+          max_files = 20
+          limit_diff = len(changed_files) > 50 or total_lines > 2000
+          if limit_diff:
+            for path, _lines in sorted(stats, key=lambda x: x[1], reverse=True)[:max_files]:
+              include.add(path)
+            selected = sorted(include)
+            diff = run(["git", "diff", "--unified=3", diff_range, "--", *selected]) if selected else ""
+          else:
+            selected = changed_files
+            diff = run(["git", "diff", "--unified=3", diff_range])
+
+          agents = Path("AGENTS.md").read_text(encoding="utf-8").splitlines()
+          rubric_lines = []
+          capture = False
+          for line in agents:
+            if line.strip().lower().startswith("## pr review rubric"):
+              capture = True
+              continue
+            if capture and line.startswith("## "):
+              break
+            if capture:
+              rubric_lines.append(line)
+          rubric = "\n".join(rubric_lines).strip()
+          if not rubric:
+            rubric = "Use the PR review rubric in AGENTS.md."
+
+          body = []
+          body.append("# Codex PR Review Instructions")
+          body.append(rubric)
+          body.append("")
+          body.append("# PR Metadata")
+          body.append(f"Title: {pr_title}")
+          body.append(f"Body: {pr_body}")
+          body.append("")
+          body.append("# Changed files")
+          for path in changed_files:
+            body.append(f"- {path}")
+          body.append("")
+          if limit_diff:
+            body.append(f"Diff truncated to {len(selected)} files (top by changed lines + critical paths).")
+            body.append("")
+          body.append("# Diff")
+          body.append("```diff")
+          body.append(diff.rstrip())
+          body.append("```")
+
+          Path("codex_input.md").write_text("\n".join(body), encoding="utf-8")
+          PY
+        env:
+          BASE_REF: ${{ steps.gate.outputs.base_ref }}
+          PR_TITLE: ${{ steps.gate.outputs.title }}
+          PR_BODY: ${{ steps.gate.outputs.body }}
+
+      - name: Run Codex review
+        if: steps.gate.outputs.run_review == 'true' && steps.keycheck.outputs.available == 'true'
+        uses: openai/codex-action@v1
+        with:
+          api_key: ${{ secrets.OPENAI_API_KEY }}
+          command: codex exec --input codex_input.md --output codex_review.md --format markdown
+
+      - name: Post review comment
+        if: steps.gate.outputs.run_review == 'true' && steps.keycheck.outputs.available == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- CODEX_REVIEW -->';
+            const body = `${marker}\n` + fs.readFileSync('codex_review.md', 'utf8');
+            const prNumber = Number('${{ steps.gate.outputs.pr_number }}');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
