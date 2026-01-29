@@ -123,9 +123,12 @@ def _parse_single_arg(inner: str, name: str) -> str:
         args = ast.literal_eval(f"({inner})")
     except (SyntaxError, ValueError) as exc:
         raise ValueError(f"Invalid {name} action syntax") from exc
-    if not isinstance(args, tuple) or len(args) != 1:
-        raise ValueError(f"{name} requires (arg)")
-    (value,) = args
+    if isinstance(args, tuple):
+        if len(args) != 1:
+            raise ValueError(f"{name} requires (arg)")
+        (value,) = args
+    else:
+        value = args
     if not isinstance(value, str):
         raise TypeError(f"{name} requires a string argument")
     return value
