@@ -19,6 +19,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--compile", action="store_true")
+    parser.add_argument("--kv-cache-len", type=int, default=None)
+    parser.add_argument("--prefill-kv", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     return parser.parse_args()
@@ -54,7 +56,11 @@ def main() -> None:
 
     input_ids = torch.zeros((args.batch_size, args.seq_len), dtype=torch.long)
     obs = torch.zeros((args.batch_size, args.obs_dim), dtype=torch.float32)
-    state = model.init_state(batch_size=args.batch_size)
+    state = model.init_state(
+        batch_size=args.batch_size,
+        prefill_kv=args.prefill_kv,
+        kv_max_seq_len=args.kv_cache_len,
+    )
 
     for _ in range(args.warmup):
         _ = model.step(input_ids=input_ids, obs=obs, state=state)

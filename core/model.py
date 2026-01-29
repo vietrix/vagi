@@ -27,8 +27,15 @@ class VAGICore(nn.Module):
         self.v = ValueHead(cfg.hidden_size)
         self.world = WorldHead(cfg.hidden_size, cfg.obs_dim) if cfg.use_world_pred else None
 
-    def init_state(self, batch_size: int, device: Optional[torch.device | str] = None) -> RecurrentState:
-        """Initialize a zeroed recurrent state."""
+    def init_state(
+        self,
+        batch_size: int,
+        device: Optional[torch.device | str] = None,
+        *,
+        prefill_kv: bool = False,
+        kv_max_seq_len: Optional[int] = None,
+    ) -> RecurrentState:
+        """Initialize a zeroed recurrent state with optional KV preallocation."""
         if batch_size <= 0:
             raise ValueError("batch_size must be > 0")
         device = device or next(self.parameters()).device
@@ -38,7 +45,24 @@ class VAGICore(nn.Module):
             device=device,
             dtype=dtype,
         )
-        kv = KVCache.empty(self.cfg.n_layers)
+        if kv_max_seq_len is not None and kv_max_seq_len <= 0:
+            raise ValueError("kv_max_seq_len must be > 0")
+        if prefill_kv:
+            max_len = kv_max_seq_len or self.cfg.max_seq_len
+            n_kv_heads = self.cfg.n_kv_heads if self.cfg.use_gqa else self.cfg.n_heads
+            kv = KVCache.allocate(
+                num_layers=self.cfg.n_layers,
+                batch_size=batch_size,
+                n_kv_heads=n_kv_heads,
+                head_dim=self.cfg.head_dim,
+                max_len=max_len,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            kv = KVCache.empty(self.cfg.n_layers)
+            if kv_max_seq_len is not None:
+                kv.max_len = kv_max_seq_len
         return RecurrentState(mem=mem, kv=kv, timestep=0)
 
     def forward(

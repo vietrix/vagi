@@ -302,6 +302,8 @@ class CausalTransformerBackbone(nn.Module):
         x = self._add_positions(x, start_pos=start_pos)
 
         kv_next = KVCache.empty(len(self.blocks))
+        max_len = state.kv.max_len if state.kv is not None else None
+        new_len = x.shape[1]
         for idx, block in enumerate(self.blocks):
             k_prev = None
             v_prev = None
@@ -309,9 +311,22 @@ class CausalTransformerBackbone(nn.Module):
                 k_prev = state.kv.keys[idx]
             if state.kv.values is not None:
                 v_prev = state.kv.values[idx]
+            if max_len is not None and k_prev is not None and v_prev is not None:
+                allowed_past = max_len - new_len
+                if allowed_past < 0:
+                    allowed_past = 0
+                if k_prev.shape[2] > allowed_past:
+                    if allowed_past == 0:
+                        k_prev = k_prev[:, :, :0, :]
+                        v_prev = v_prev[:, :, :0, :]
+                    else:
+                        k_prev = k_prev[:, :, -allowed_past:, :]
+                        v_prev = v_prev[:, :, -allowed_past:, :]
             x, (k_new, v_new) = block.forward_step(x, (k_prev, v_prev))
             kv_next.keys[idx] = k_new
             kv_next.values[idx] = v_new
+        if max_len is not None:
+            kv_next.max_len = max_len
 
         h_last = x[:, -1, :]
         h_act = x[:, act_index, :] if act_index is not None else None

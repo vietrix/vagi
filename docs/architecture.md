@@ -21,8 +21,8 @@ This document describes the vAGI core model and its minimal training/runtime sta
 - `WorldHead`: optional next-observation prediction.
 
 ## Cache
-- `KVCache` in `core/memory.py` is a placeholder container to allow future KV
-  implementations without refactoring the public API.
+- `KVCache` in `core/memory.py` stores per-layer keys/values for step-wise decoding.
+- Optional `max_len` truncates cached history for bounded memory usage.
 
 ## Training loops
 - `scripts/train.py`: minimal supervised language-model training.
@@ -33,4 +33,4 @@ This document describes the vAGI core model and its minimal training/runtime sta
 ## Inference tuning
 - Batch size can be tuned for throughput in scripts and benchmarks.
 - `scripts/bench_latency.py` supports a `--compile` flag for `torch.compile`.
-- KV-cache settings are currently stubbed; future tuning should replace `KVCache`.
+- `scripts/tune_inference.py` sweeps batch size and optional KV cache lengths.
