@@ -36,3 +36,9 @@ python -m scripts.tune_inference --batch-sizes 1,2,4 --kv-cache-len 16
 
 Logs and rollouts are scrubbed for common PII patterns by default. See
 `docs/PRIVACY.md` for opt-in, retention, and delete controls.
+
+## Export
+
+```bash
+python -m scripts.export_onnx --out exports/vagi.onnx
+```
