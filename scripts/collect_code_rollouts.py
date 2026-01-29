@@ -9,7 +9,7 @@ from typing import Dict, List
 
 import torch
 
-from envs.code_env.actions import EditAction, RunTestsAction, serialize_action
+from envs.code_env.actions import ApplyPatchAction, ReadFileAction, RunTestsAction, serialize_action
 from envs.code_env.code_env import CodeEnv, PATCH_SEPARATOR
 from scripts.utils import set_seed
 
@@ -57,7 +57,9 @@ def collect_rollouts(
         obs = env.reset()
         for step_idx in range(max_steps):
             if step_idx == 0:
-                action = serialize_action(EditAction(path="src/buggy.py", patch=patch))
+                action = serialize_action(ReadFileAction(path="src/buggy.py"))
+            elif step_idx == 1:
+                action = serialize_action(ApplyPatchAction(path="src/buggy.py", diff=patch))
             else:
                 action = serialize_action(RunTestsAction())
             obs_next, reward, done, _info = env.step(action)

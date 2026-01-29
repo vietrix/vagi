@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from vagi_core import VAGIConfig, VAGICore
 
-from envs.code_env.actions import action_type_id, parse_action
+from envs.code_env.actions import ACTION_DIM, action_type_id, parse_action
 from scripts.utils import set_seed
 
 
@@ -47,8 +47,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--obs-tokens", type=int, default=2)
     parser.add_argument("--memory-slots", type=int, default=4)
-    parser.add_argument("--use-special-tokens", action="store_true", default=True)
-    parser.add_argument("--no-special-tokens", action="store_false", dest="use_special_tokens")
     return parser.parse_args()
 
 
@@ -77,7 +75,6 @@ def train_policy(
     heads: int,
     obs_tokens: int,
     memory_slots: int,
-    use_special_tokens: bool,
 ) -> List[Dict[str, float]]:
     set_seed(seed)
     records = _load_records(data_path)
@@ -97,11 +94,10 @@ def train_policy(
         max_seq_len=8,
         obs_dim=obs_dim,
         obs_tokens=obs_tokens,
-        action_dim=2,
+        action_dim=ACTION_DIM,
         memory_slots=memory_slots,
         dropout=0.0,
         use_world_pred=False,
-        use_special_tokens=use_special_tokens,
     )
     model = VAGICore(cfg)
     model.train()
@@ -160,7 +156,6 @@ def main() -> None:
         heads=args.heads,
         obs_tokens=args.obs_tokens,
         memory_slots=args.memory_slots,
-        use_special_tokens=args.use_special_tokens,
     )
 
 
