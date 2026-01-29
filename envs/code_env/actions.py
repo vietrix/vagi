@@ -7,7 +7,17 @@ from dataclasses import dataclass
 from typing import List, Union
 
 
-ACTION_TYPES = ("RUN_TESTS", "READ_FILE", "LIST_DIR", "SEARCH", "APPLY_PATCH")
+ACTION_TYPES = (
+    "RUN_TESTS",
+    "READ_FILE",
+    "LIST_DIR",
+    "SEARCH",
+    "APPLY_PATCH",
+    "PLAN_READ_ERRORS",
+    "PLAN_LOCATE_SOURCE",
+    "PLAN_PATCH",
+    "PLAN_VERIFY",
+)
 ACTION_DIM = len(ACTION_TYPES)
 
 
@@ -37,7 +47,37 @@ class RunTestsAction:
     pass
 
 
-Action = Union[ReadFileAction, ListDirAction, SearchAction, ApplyPatchAction, RunTestsAction]
+@dataclass(frozen=True)
+class PlanReadErrorsAction:
+    pass
+
+
+@dataclass(frozen=True)
+class PlanLocateSourceAction:
+    pass
+
+
+@dataclass(frozen=True)
+class PlanPatchAction:
+    pass
+
+
+@dataclass(frozen=True)
+class PlanVerifyAction:
+    pass
+
+
+Action = Union[
+    ReadFileAction,
+    ListDirAction,
+    SearchAction,
+    ApplyPatchAction,
+    RunTestsAction,
+    PlanReadErrorsAction,
+    PlanLocateSourceAction,
+    PlanPatchAction,
+    PlanVerifyAction,
+]
 
 
 def serialize_action(action: Action) -> str:
@@ -54,6 +94,14 @@ def serialize_action(action: Action) -> str:
     if isinstance(action, ApplyPatchAction):
         path = action.path.replace("\\", "/")
         return f'APPLY_PATCH("{path}", "{_escape(action.diff)}")'
+    if isinstance(action, PlanReadErrorsAction):
+        return "PLAN_READ_ERRORS()"
+    if isinstance(action, PlanLocateSourceAction):
+        return "PLAN_LOCATE_SOURCE()"
+    if isinstance(action, PlanPatchAction):
+        return "PLAN_PATCH()"
+    if isinstance(action, PlanVerifyAction):
+        return "PLAN_VERIFY()"
     raise TypeError("Unknown action type")
 
 
@@ -61,6 +109,14 @@ def parse_action(text: str) -> Action:
     text = text.strip()
     if text == "RUN_TESTS()":
         return RunTestsAction()
+    if text == "PLAN_READ_ERRORS()":
+        return PlanReadErrorsAction()
+    if text == "PLAN_LOCATE_SOURCE()":
+        return PlanLocateSourceAction()
+    if text == "PLAN_PATCH()":
+        return PlanPatchAction()
+    if text == "PLAN_VERIFY()":
+        return PlanVerifyAction()
     if text.startswith("READ_FILE(") and text.endswith(")"):
         inner = text[len("READ_FILE(") : -1]
         path = _parse_single_arg(inner, "READ_FILE")
@@ -99,6 +155,14 @@ def action_type_id(action: Action) -> int:
         return 3
     if isinstance(action, ApplyPatchAction):
         return 4
+    if isinstance(action, PlanReadErrorsAction):
+        return 5
+    if isinstance(action, PlanLocateSourceAction):
+        return 6
+    if isinstance(action, PlanPatchAction):
+        return 7
+    if isinstance(action, PlanVerifyAction):
+        return 8
     return -1
 
 

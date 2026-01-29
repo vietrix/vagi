@@ -17,6 +17,10 @@ from .actions import (
     ACTION_DIM,
     ApplyPatchAction,
     ListDirAction,
+    PlanLocateSourceAction,
+    PlanPatchAction,
+    PlanReadErrorsAction,
+    PlanVerifyAction,
     ReadFileAction,
     RunTestsAction,
     SearchAction,
@@ -80,9 +84,11 @@ class CodeEnv:
         self.run_tests_count = 0
         self.step_count = 0
         self.initial_fail_count = 0
+        self.plan_state = 0
         self._read_files: set[str] = set()
         self._last_digest: Dict[str, Tuple[int, str]] = {}
         self._total_files = 0
+        self._last_patch_backup: Tuple[str, str] | None = None
 
     def seed(self, seed: int) -> int:
         self.seed_value = seed
@@ -103,6 +109,7 @@ class CodeEnv:
         _digest_text, digest = _tree_digest(self.repo_path)
         self._last_digest = digest
         self._total_files = len(digest)
+        self.plan_state = 0
         return self._build_obs()
 
     def step(self, action: str) -> Tuple[torch.Tensor, float, bool, dict]:
@@ -122,6 +129,22 @@ class CodeEnv:
             self.last_tool_ok = True
         elif isinstance(parsed, SearchAction):
             self.last_output = self._search(parsed.pattern)
+            self.last_tool_ok = True
+        elif isinstance(parsed, PlanReadErrorsAction):
+            self.plan_state = 1
+            self.last_output = "PLAN_READ_ERRORS"
+            self.last_tool_ok = True
+        elif isinstance(parsed, PlanLocateSourceAction):
+            self.plan_state = 2
+            self.last_output = "PLAN_LOCATE_SOURCE"
+            self.last_tool_ok = True
+        elif isinstance(parsed, PlanPatchAction):
+            self.plan_state = 3
+            self.last_output = "PLAN_PATCH"
+            self.last_tool_ok = True
+        elif isinstance(parsed, PlanVerifyAction):
+            self.plan_state = 4
+            self.last_output = "PLAN_VERIFY"
             self.last_tool_ok = True
         elif isinstance(parsed, ApplyPatchAction):
             applied, reason = self._apply_patch_action(parsed.path, parsed.diff)
@@ -166,6 +189,7 @@ class CodeEnv:
                 "patch_applied": self.last_patch_applied,
                 "run_tests_count": self.run_tests_count,
                 "changed_files": self.last_changed_files,
+                "plan_state": self.plan_state,
             }
         )
         return obs, reward, done, info
@@ -248,7 +272,21 @@ class CodeEnv:
         if not applied:
             return False, "ERROR: patch_not_applied"
         path.write_text(updated, encoding="utf-8")
+        self._last_patch_backup = (path_key, text)
         return True, "OK: patch_applied"
+
+    def rollback_last_patch(self) -> bool:
+        if self._last_patch_backup is None:
+            return False
+        path_key, text = self._last_patch_backup
+        path = self._safe_path(path_key)
+        path.write_text(text, encoding="utf-8")
+        self._last_patch_backup = None
+        return True
+
+    def refresh_obs(self) -> torch.Tensor:
+        """Rebuild observation without advancing the environment."""
+        return self._build_obs()
 
     def _safe_path(self, rel_path: str, expect_dir: bool = False) -> Path:
         path = (self.repo_path / rel_path).resolve()
@@ -279,12 +317,16 @@ class CodeEnv:
             total_files=max(self._total_files, 1),
             action_id=self.last_action_id,
             action_space=ACTION_DIM,
+            plan_state=self.plan_state,
+            plan_space=4,
+            failing_tests_count=len(self.last_failing_tests),
             tool_ok=self.last_tool_ok,
             patch_applied=self.last_patch_applied,
             output_len=self.last_output_len,
             max_output=self.max_output_chars,
         )
-        return text_to_obs(text, self.obs_dim, features=features, feature_slots=len(features))
+        feature_slots = min(len(features), self.obs_dim)
+        return text_to_obs(text, self.obs_dim, features=features[:feature_slots], feature_slots=feature_slots)
 
 
 def _apply_patch(text: str, patch: str) -> Tuple[str, bool]:
@@ -369,6 +411,9 @@ def _build_features(
     total_files: int,
     action_id: int,
     action_space: int,
+    plan_state: int,
+    plan_space: int,
+    failing_tests_count: int,
     tool_ok: bool,
     patch_applied: bool,
     output_len: int,
@@ -380,6 +425,8 @@ def _build_features(
         _norm(step, max_steps),
         _norm(changed_files, total_files),
         _norm(max(action_id, 0), max(action_space - 1, 1)),
+        _norm(failing_tests_count, max(initial_fail, 1)),
+        _norm(plan_state, max(plan_space, 1)),
         1.0 if tool_ok else 0.0,
         1.0 if patch_applied else 0.0,
         _norm(output_len, max_output),

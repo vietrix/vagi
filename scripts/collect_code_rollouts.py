@@ -9,7 +9,16 @@ from typing import Dict, List
 
 import torch
 
-from envs.code_env.actions import ApplyPatchAction, ReadFileAction, RunTestsAction, serialize_action
+from envs.code_env.actions import (
+    ApplyPatchAction,
+    PlanLocateSourceAction,
+    PlanPatchAction,
+    PlanReadErrorsAction,
+    PlanVerifyAction,
+    ReadFileAction,
+    RunTestsAction,
+    serialize_action,
+)
 from envs.code_env.code_env import CodeEnv, PATCH_SEPARATOR
 from scripts.utils import set_seed
 
@@ -18,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect rollouts from CodeEnv.")
     parser.add_argument("--out", type=str, default="logs/code_rollouts.jsonl")
     parser.add_argument("--episodes", type=int, default=5)
-    parser.add_argument("--max-steps", type=int, default=4)
+    parser.add_argument("--max-steps", type=int, default=8)
     parser.add_argument("--obs-dim", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--policy", type=str, default="scripted", choices=["scripted"])
@@ -57,12 +66,20 @@ def collect_rollouts(
         obs = env.reset()
         for step_idx in range(max_steps):
             if step_idx == 0:
-                action = serialize_action(ReadFileAction(path="src/buggy.py"))
+                action = serialize_action(PlanReadErrorsAction())
             elif step_idx == 1:
+                action = serialize_action(PlanLocateSourceAction())
+            elif step_idx == 2:
+                action = serialize_action(ReadFileAction(path="src/buggy.py"))
+            elif step_idx == 3:
+                action = serialize_action(PlanPatchAction())
+            elif step_idx == 4:
                 action = serialize_action(ApplyPatchAction(path="src/buggy.py", diff=patch))
+            elif step_idx == 5:
+                action = serialize_action(PlanVerifyAction())
             else:
                 action = serialize_action(RunTestsAction())
-            obs_next, reward, done, _info = env.step(action)
+            obs_next, reward, done, info = env.step(action)
             record = {
                 "obs": _to_list(obs),
                 "action": action,
@@ -72,6 +89,9 @@ def collect_rollouts(
                 "obs_next": _to_list(obs_next),
                 "timestep": int(step_idx),
                 "seed": int(seed),
+                "fail_count": int(info.get("fail_count", 0)),
+                "failing_tests": info.get("failing_tests", []),
+                "top_error_type": info.get("top_error_type", ""),
             }
             records.append(record)
             obs = obs_next
