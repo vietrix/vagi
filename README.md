@@ -23,3 +23,15 @@ action_logits = out["action_logits"]
 value = out["value"]
 state = out["state"]
 ```
+
+## Reproducibility
+
+```bash
+python -m scripts.run_all_benchmarks --deterministic
+python -m scripts.bench_latency --steps 50
+```
+
+## Privacy
+
+Logs and rollouts are scrubbed for common PII patterns by default. See
+`docs/PRIVACY.md` for opt-in, retention, and delete controls.

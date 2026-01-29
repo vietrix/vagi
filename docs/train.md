@@ -2,31 +2,29 @@
 
 This project provides minimal training and evaluation scripts for the core model.
 
-## Suggested steps
-1. Prepare tokenized text and optional observations.
-2. Build targets for language, policy, value, and optional world prediction.
-3. Call `VAGICore.forward(..., return_loss=True)` and optimize the total loss.
-
 ## Scripts
 
-### Train on random data
+### Language model (supervised)
 ```bash
-python -m scripts.train --epochs 1 --steps-per-epoch 2 --batch-size 2 --seq-len 4
+python -m scripts.train --data data/sample/sample.txt --epochs 1 --batch-size 4 --save-every 10
 ```
 
-### Train on a saved tensor dataset
+### Collect rollouts
 ```bash
-python -m scripts.make_dummy_data --output data.pt
-python -m scripts.train --data data.pt --with-obs --with-world
+python -m scripts.collect_code_rollouts --episodes 3 --out logs/code_rollouts.jsonl
 ```
 
-### Checkpointing (safetensors)
+### Behavior cloning
 ```bash
-python -m scripts.train --save checkpoints/run1
-python -m scripts.train --resume checkpoints/run1 --save checkpoints/run2
+python -m scripts.train_policy_bc --data logs/code_rollouts.jsonl
 ```
 
-### Evaluate
+### Value model
 ```bash
-python -m scripts.eval --data data.pt --with-obs --with-world --checkpoint checkpoints/run1
+python -m scripts.train_value --data logs/code_rollouts.jsonl
+```
+
+### World model
+```bash
+python -m scripts.train_world_model --data logs/code_rollouts.jsonl
 ```

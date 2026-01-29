@@ -2,10 +2,11 @@
 
 ## Requirements
 - Python 3.11
-- PyTorch 2.x
+- Pinned versions are listed in `requirements-lock.txt`.
 
 ## Editable install
 ```bash
+python -m pip install -r requirements-lock.txt
 python -m pip install -e .
 ```
 
