@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
 SCHEMA_VERSION = 1
+SUPPORTED_VERSIONS = {0, 1}
 
 REQUIRED_KEYS = {
     "schema_version",
@@ -80,8 +81,10 @@ def validate_record(raw: Dict[str, Any]) -> RolloutRecord:
         raise ValueError(f"record has unknown keys: {sorted(extra)}")
 
     schema_version = _ensure_int(raw["schema_version"], "schema_version")
-    if schema_version != SCHEMA_VERSION:
-        raise ValueError(f"schema_version must be {SCHEMA_VERSION}")
+    if schema_version not in SUPPORTED_VERSIONS:
+        raise ValueError(f"schema_version must be one of {sorted(SUPPORTED_VERSIONS)}")
+    if schema_version == 0:
+        schema_version = SCHEMA_VERSION
     episode_id = raw["episode_id"]
     if not isinstance(episode_id, (str, int)):
         raise TypeError("episode_id must be str or int")

@@ -8,6 +8,10 @@ All records must include:
 
 - `schema_version`: integer (current = `1`)
 
+Backward compatibility:
+
+- `schema_version: 0` is accepted and normalized to `1`.
+
 ## Required fields (per line)
 
 Each line is a single JSON object with the following required keys:
