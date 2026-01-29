@@ -1,5 +1,0 @@
-def last_char(text: str) -> str:
-    return text[0]
----
-def last_char(text: str) -> str:
-    return text[-1]

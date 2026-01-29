@@ -1,5 +1,0 @@
-def unique_count(items: list[int]) -> int:
-    return len(items)
----
-def unique_count(items: list[int]) -> int:
-    return len(set(items))

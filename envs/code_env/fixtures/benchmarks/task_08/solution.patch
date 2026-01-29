@@ -1,5 +1,0 @@
-def sum_list(items: list[int]) -> int:
-    return max(items)
----
-def sum_list(items: list[int]) -> int:
-    return sum(items)

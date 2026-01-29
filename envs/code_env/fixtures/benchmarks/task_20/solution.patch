@@ -1,5 +1,0 @@
-def shout(text: str) -> str:
-    return text.lower()
----
-def shout(text: str) -> str:
-    return text.upper()

@@ -1,6 +1,0 @@
-def is_palindrome(text: str) -> bool:
-    return text == text[::-1]
----
-def is_palindrome(text: str) -> bool:
-    cleaned = text.lower()
-    return cleaned == cleaned[::-1]
