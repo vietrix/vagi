@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--awbc-temp", type=float, default=0.5)
     parser.add_argument("--anchor", type=str, default=None)
     parser.add_argument("--anchor-weight", type=float, default=0.0)
+    parser.add_argument("--rep-weight", type=float, default=0.0)
+    parser.add_argument("--rep-noise-std", type=float, default=0.0)
+    parser.add_argument("--rep-method", type=str, default="mse", choices=["mse", "cosine", "contrastive"])
+    parser.add_argument("--bf16", action="store_true")
+    parser.add_argument("--grad-checkpoint", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--vocab-size", type=int, default=128)
@@ -136,6 +141,7 @@ def main() -> None:
         memory_slots=args.memory_slots,
         dropout=0.0,
         use_world_pred=False,
+        use_grad_checkpoint=args.grad_checkpoint,
     )
     model = VAGICore(cfg)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -171,7 +177,15 @@ def main() -> None:
 
         input_ids = actions.unsqueeze(1).clamp(max=cfg.vocab_size - 1)
         state = model.init_state(batch_size=obs.shape[0])
-        out = model.forward(input_ids=input_ids, obs=obs, state=state, return_loss=False)
+        autocast = torch.autocast("cpu", dtype=torch.bfloat16) if args.bf16 else torch.autocast("cpu", enabled=False)
+        with autocast:
+            out = model.forward(
+                input_ids=input_ids,
+                obs=obs,
+                state=state,
+                return_loss=False,
+                return_hidden=args.rep_weight > 0.0,
+            )
 
         logits = out["action_logits"]
         values = out["value"]
@@ -183,6 +197,25 @@ def main() -> None:
         policy_loss = torch.mean(ce * weights)
         value_loss = F.mse_loss(values, returns)
         loss = policy_loss + args.value_weight * value_loss
+
+        if args.rep_weight > 0.0 and args.rep_noise_std > 0.0:
+            from vagi_core.losses import representation_loss
+
+            obs_noisy = obs + torch.randn_like(obs) * args.rep_noise_std
+            with autocast:
+                rep_out = model.forward(
+                    input_ids=input_ids,
+                    obs=obs_noisy,
+                    state=state,
+                    return_loss=False,
+                    return_hidden=True,
+                )
+            rep_loss = representation_loss(
+                out["hidden"],
+                rep_out["hidden"],
+                method=args.rep_method,
+            )
+            loss = loss + args.rep_weight * rep_loss
 
         if anchor_state is not None and args.anchor_weight > 0.0:
             loss = loss + args.anchor_weight * _anchor_loss(model, anchor_state)

@@ -32,6 +32,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--value-weight", type=float, default=0.5)
     parser.add_argument("--anchor", type=str, default=None)
     parser.add_argument("--anchor-weight", type=float, default=0.0)
+    parser.add_argument("--bf16", action="store_true")
+    parser.add_argument("--grad-checkpoint", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--vocab-size", type=int, default=128)
@@ -84,6 +86,7 @@ def main() -> None:
         memory_slots=args.memory_slots,
         dropout=0.0,
         use_world_pred=False,
+        use_grad_checkpoint=args.grad_checkpoint,
     )
     model = VAGICore(cfg)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -111,7 +114,9 @@ def main() -> None:
 
             input_ids = actions.unsqueeze(1).clamp(max=cfg.vocab_size - 1)
             state = model.init_state(batch_size=obs.shape[0])
-            out = model.forward(input_ids=input_ids, obs=obs, state=state, return_loss=False)
+            autocast = torch.autocast("cpu", dtype=torch.bfloat16) if args.bf16 else torch.autocast("cpu", enabled=False)
+            with autocast:
+                out = model.forward(input_ids=input_ids, obs=obs, state=state, return_loss=False)
 
             logits = out["action_logits"]
             values = out["value"]
