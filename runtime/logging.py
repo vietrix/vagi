@@ -6,15 +6,25 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from runtime.privacy import scrub_record
+
 
 class JsonlWriter:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        scrub_pii: bool = True,
+        privacy_opt_in: bool = False,
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = self.path.open("w", encoding="utf-8")
+        self._scrub = scrub_pii or not privacy_opt_in
 
     def write(self, record: Dict[str, Any]) -> None:
-        self._fh.write(json.dumps(record) + "\n")
+        safe_record = scrub_record(record) if self._scrub else record
+        self._fh.write(json.dumps(safe_record) + "\n")
         self._fh.flush()
 
     def close(self) -> None:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Dict, List
 
@@ -20,6 +19,8 @@ from envs.code_env.actions import (
     serialize_action,
 )
 from envs.code_env.code_env import CodeEnv, PATCH_SEPARATOR
+from runtime.logging import JsonlWriter
+from runtime.privacy import apply_retention, delete_logs
 from scripts.utils import set_deterministic
 
 
@@ -32,6 +33,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--policy", type=str, default="scripted", choices=["scripted"])
+    parser.add_argument("--privacy-opt-in", action="store_true")
+    parser.add_argument("--retain-days", type=int, default=7)
+    parser.add_argument("--delete-logs", action="store_true")
     return parser.parse_args()
 
 
@@ -53,6 +57,9 @@ def collect_rollouts(
     obs_dim: int,
     seed: int,
     deterministic: bool = False,
+    privacy_opt_in: bool = False,
+    retain_days: int | None = 7,
+    delete_existing: bool = False,
 ) -> List[Dict[str, object]]:
     if episodes <= 0:
         raise ValueError("episodes must be > 0")
@@ -64,47 +71,52 @@ def collect_rollouts(
     records: List[Dict[str, object]] = []
     patch = _fix_patch()
 
-    for _ in range(episodes):
-        obs = env.reset()
-        for step_idx in range(max_steps):
-            if step_idx == 0:
-                action = serialize_action(PlanReadErrorsAction())
-            elif step_idx == 1:
-                action = serialize_action(PlanLocateSourceAction())
-            elif step_idx == 2:
-                action = serialize_action(ReadFileAction(path="src/buggy.py"))
-            elif step_idx == 3:
-                action = serialize_action(PlanPatchAction())
-            elif step_idx == 4:
-                action = serialize_action(ApplyPatchAction(path="src/buggy.py", diff=patch))
-            elif step_idx == 5:
-                action = serialize_action(PlanVerifyAction())
-            else:
-                action = serialize_action(RunTestsAction())
-            obs_next, reward, done, info = env.step(action)
-            record = {
-                "obs": _to_list(obs),
-                "action": action,
-                "reward": float(reward),
-                "done": bool(done),
-                "value": 0.0,
-                "obs_next": _to_list(obs_next),
-                "timestep": int(step_idx),
-                "seed": int(seed),
-                "fail_count": int(info.get("fail_count", 0)),
-                "failing_tests": info.get("failing_tests", []),
-                "top_error_type": info.get("top_error_type", ""),
-            }
-            records.append(record)
-            obs = obs_next
-            if done:
-                break
-
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record) + "\n")
+    if delete_existing:
+        delete_logs(out_path.parent)
+    apply_retention(out_path.parent, retain_days)
+    writer = JsonlWriter(out_path, scrub_pii=True, privacy_opt_in=privacy_opt_in)
+
+    try:
+        for _ in range(episodes):
+            obs = env.reset()
+            for step_idx in range(max_steps):
+                if step_idx == 0:
+                    action = serialize_action(PlanReadErrorsAction())
+                elif step_idx == 1:
+                    action = serialize_action(PlanLocateSourceAction())
+                elif step_idx == 2:
+                    action = serialize_action(ReadFileAction(path="src/buggy.py"))
+                elif step_idx == 3:
+                    action = serialize_action(PlanPatchAction())
+                elif step_idx == 4:
+                    action = serialize_action(ApplyPatchAction(path="src/buggy.py", diff=patch))
+                elif step_idx == 5:
+                    action = serialize_action(PlanVerifyAction())
+                else:
+                    action = serialize_action(RunTestsAction())
+                obs_next, reward, done, info = env.step(action)
+                record = {
+                    "obs": _to_list(obs),
+                    "action": action,
+                    "reward": float(reward),
+                    "done": bool(done),
+                    "value": 0.0,
+                    "obs_next": _to_list(obs_next),
+                    "timestep": int(step_idx),
+                    "seed": int(seed),
+                    "fail_count": int(info.get("fail_count", 0)),
+                    "failing_tests": info.get("failing_tests", []),
+                    "top_error_type": info.get("top_error_type", ""),
+                }
+                records.append(record)
+                writer.write(record)
+                obs = obs_next
+                if done:
+                    break
+    finally:
+        writer.close()
     return records
 
 
@@ -117,6 +129,9 @@ def main() -> None:
         obs_dim=args.obs_dim,
         seed=args.seed,
         deterministic=args.deterministic,
+        privacy_opt_in=args.privacy_opt_in,
+        retain_days=args.retain_days,
+        delete_existing=args.delete_logs,
     )
     print(f"Saved code rollouts to {args.out}")
 

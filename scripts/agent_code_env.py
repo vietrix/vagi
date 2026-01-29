@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -21,6 +20,8 @@ from envs.code_env.actions import (
     serialize_action,
 )
 from envs.code_env.code_env import CodeEnv
+from runtime.logging import JsonlWriter
+from runtime.privacy import apply_retention, delete_logs
 from vagi_core import VAGIConfig, VAGICore
 from scripts.utils import set_deterministic
 
@@ -35,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--log", type=str, default="runs/code_env_agent.jsonl")
     parser.add_argument("--value-threshold", type=float, default=0.0)
+    parser.add_argument("--privacy-opt-in", action="store_true")
+    parser.add_argument("--retain-days", type=int, default=7)
+    parser.add_argument("--delete-logs", action="store_true")
     return parser.parse_args()
 
 
@@ -42,11 +46,6 @@ def _load_patch(path: Optional[str]) -> str:
     if not path:
         return ""
     return Path(path).read_text(encoding="utf-8")
-
-
-def _log(writer, record: Dict[str, object]) -> None:
-    writer.write(json.dumps(record) + "\n")
-    writer.flush()
 
 
 def main() -> None:
@@ -78,7 +77,11 @@ def main() -> None:
 
     log_path = Path(args.log)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8") as handle:
+    if args.delete_logs:
+        delete_logs(log_path.parent)
+    apply_retention(log_path.parent, args.retain_days)
+    writer = JsonlWriter(log_path, scrub_pii=True, privacy_opt_in=args.privacy_opt_in)
+    try:
         for t in range(args.steps):
             input_ids = torch.zeros((1, 1), dtype=torch.long)
             out = model.step(input_ids=input_ids, obs=obs.unsqueeze(0), state=state)
@@ -138,10 +141,12 @@ def main() -> None:
                 "fail_count": info.get("fail_count"),
                 "top_error_type": info.get("top_error_type"),
             }
-            _log(handle, record)
+            writer.write(record)
             state = out["state"]
             if done:
                 break
+    finally:
+        writer.close()
 
 
 if __name__ == "__main__":
