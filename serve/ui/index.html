@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>vAGI Core UI</title>
+  </head>
+  <body>
+    <h1>vAGI Core UI</h1>
+    <button id="init">Init State</button>
+    <button id="step">Step</button>
+    <button id="plan">Plan</button>
+    <pre id="output"></pre>
+    <script>
+      const output = document.getElementById("output");
+      let stateId = null;
+
+      async function callApi(path, payload) {
+        const res = await fetch(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+        });
+        return res.json();
+      }
+
+      document.getElementById("init").addEventListener("click", async () => {
+        const data = await callApi("/v1/core/init", { batchSize: 1 });
+        stateId = data.stateId;
+        output.textContent = JSON.stringify(data, null, 2);
+      });
+
+      document.getElementById("step").addEventListener("click", async () => {
+        if (!stateId) return;
+        const data = await callApi("/v1/core/step", {
+          stateId,
+          inputIds: [[0]],
+          obs: [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+        });
+        output.textContent = JSON.stringify(data, null, 2);
+      });
+
+      document.getElementById("plan").addEventListener("click", async () => {
+        if (!stateId) return;
+        const data = await callApi("/v1/core/plan", {
+          stateId,
+          inputIds: [[0]],
+          obs: [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+          horizon: 2,
+          numCandidates: 4,
+        });
+        output.textContent = JSON.stringify(data, null, 2);
+      });
+    </script>
+  </body>
+</html>
