@@ -36,6 +36,9 @@ python -m scripts.ablate_fast_memory --deterministic
 python -m scripts.ablate_world_head --deterministic
 python -m scripts.ablate_kv_cache --deterministic
 python -m scripts.run_curriculum --pass-threshold 0.6 --deterministic
+python -m scripts.run_curriculum_multi_env --pass-threshold 0.6 --deterministic
+python -m scripts.collect_multi_env_rollouts --episodes-per-env 10 --episodes-per-task 2 --deterministic
+python -m scripts.self_improve_multi_env --iterations 5 --deterministic
 ```
 
 ## Baseline evaluation

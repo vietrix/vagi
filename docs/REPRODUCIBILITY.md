@@ -53,6 +53,38 @@ Outputs:
 - `results/curriculum/run_<timestamp>/curriculum.json`
 - `results/curriculum/run_<timestamp>/curriculum.csv`
 
+## Multi-env curriculum
+Run curriculum progression across ToyEnv, UIEnv, and CodeEnv:
+
+```bash
+python -m scripts.run_curriculum_multi_env --pass-threshold 0.6 --deterministic
+```
+
+Outputs:
+- `results/curriculum_multi_env/run_<timestamp>/curriculum.json`
+- `results/curriculum_multi_env/run_<timestamp>/curriculum.csv`
+
+## Multi-env rollouts
+Scale offline data across environments:
+
+```bash
+python -m scripts.collect_multi_env_rollouts --episodes-per-env 10 --episodes-per-task 2 --deterministic
+```
+
+Outputs:
+- `logs/multi_env_rollouts.jsonl`
+
+## Long-run self-improve
+Run multi-env self-improvement and track pass-rate over time:
+
+```bash
+python -m scripts.self_improve_multi_env --iterations 5 --deterministic
+```
+
+Outputs:
+- `runs/self_improve_multi_env/run_<timestamp>/history.json`
+- `runs/self_improve_multi_env/run_<timestamp>/history.csv`
+
 ## Seeds
 - Default seeds are `0..9` when `--seeds` is omitted.
 - Use `--deterministic` for deterministic PyTorch kernels.
