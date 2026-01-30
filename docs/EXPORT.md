@@ -26,6 +26,16 @@ Each export writes a metadata file `{artifact}.meta.json` with:
 - `config` (full model config)
 - `export` info (format, quantization, source)
 
+## Manifest
+The repository tracks `exports/manifest.json` with:
+
+- model name/version
+- git SHA
+- config hash
+- schema version
+- backend targets (onnx/tensorrt)
+- expected metrics from golden runs
+
 ## Parity + latency check
 ```bash
 python -m scripts.check_export_parity --quant-mode int8 --runs 50
