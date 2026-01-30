@@ -1,7 +1,7 @@
 {
   "model_name": "vAGI",
   "version": "0.1.0",
-  "git_sha": "a7df4f8f65a8c4221e33e2a50e562ff9a409e1e8",
+  "git_sha": "5e22ebd0db714bc1cb7dc0c41e858778a3c42e62",
   "schema_version": 1,
   "config_hash": "412c84c9e7bf0228fb180b8ae48b460c5b47ef242fd5627a047ce40c16623657",
   "config": {
