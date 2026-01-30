@@ -309,7 +309,8 @@ def run_code_env(
 def main() -> None:
     args = parse_args()
     seeds = _parse_seeds(args.seeds)
-    action_dim = max(args.toy_action_dim, ACTION_DIM, args.ui_image_size * args.ui_image_size)
+    ui_action_dim = args.ui_image_size * args.ui_image_size
+    action_dim = max(args.toy_action_dim, ACTION_DIM, ui_action_dim)
 
     cfg = VAGIConfig(
         vocab_size=256,
@@ -350,7 +351,7 @@ def main() -> None:
             seeds,
             args.episodes,
             image_size=args.ui_image_size,
-            action_dim=action_dim,
+            action_dim=ui_action_dim,
             max_steps=args.max_steps,
             channels=args.ui_channels,
             mode=args.mode,
