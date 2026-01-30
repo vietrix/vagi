@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional, Tuple
+from contextlib import nullcontext
 
 import torch
 from torch.utils.checkpoint import checkpoint
@@ -11,7 +12,7 @@ from torch.nn import functional as F
 
 from .config import VAGIConfig
 from .memory import KVCache, RecurrentState
-from .utils import check_floating, check_shape
+from .utils import check_floating, check_shape, StageTimer
 
 
 class ObsTokenizer(nn.Module):
@@ -303,16 +304,18 @@ class CausalTransformerBackbone(nn.Module):
         obs: Optional[torch.Tensor] = None,
         task_ids: Optional[torch.Tensor] = None,
         state: Optional[RecurrentState] = None,
+        timer: Optional[StageTimer] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         if input_ids.dtype != torch.long:
             raise TypeError("input_ids must be torch.long")
         check_shape(input_ids, (None, None), "input_ids")
 
-        token_embed = self.token_embed(input_ids)
-        obs_tokens = None
-        include_special = self.use_special_tokens and obs is not None
-        if obs is not None and self.obs_tokenizer is not None:
-            obs_tokens = self.obs_tokenizer(obs)
+        with timer.track("embed") if timer else nullcontext():
+            token_embed = self.token_embed(input_ids)
+            obs_tokens = None
+            include_special = self.use_special_tokens and obs is not None
+            if obs is not None and self.obs_tokenizer is not None:
+                obs_tokens = self.obs_tokenizer(obs)
 
         x, act_index = self._combine_inputs(token_embed, obs_tokens, include_special)
         if task_ids is not None and self.task_embed is not None:
@@ -327,12 +330,13 @@ class CausalTransformerBackbone(nn.Module):
         if seq_len > self.pos_embed.num_embeddings:
             raise ValueError("Sequence length exceeds configured max_seq_len + obs_tokens")
 
-        x = self._add_positions(x, start_pos=0)
-        for block in self.blocks:
-            if self.cfg.use_grad_checkpoint and self.training:
-                x = checkpoint(block, x)
-            else:
-                x = block(x)
+        with timer.track("attn") if timer else nullcontext():
+            x = self._add_positions(x, start_pos=0)
+            for block in self.blocks:
+                if self.cfg.use_grad_checkpoint and self.training:
+                    x = checkpoint(block, x)
+                else:
+                    x = block(x)
 
         h_last = x[:, -1, :]
         h_act = x[:, act_index, :] if act_index is not None else None
@@ -340,7 +344,8 @@ class CausalTransformerBackbone(nn.Module):
         mem_next = None
         if state is not None and self.memory is not None:
             h_pool = h_act if h_act is not None else h_last
-            mem_next = self.memory(state.mem, h_pool, timestep=state.timestep)
+            with timer.track("mem") if timer else nullcontext():
+                mem_next = self.memory(state.mem, h_pool, timestep=state.timestep)
 
         return x, h_last, h_act, mem_next
 
@@ -350,6 +355,7 @@ class CausalTransformerBackbone(nn.Module):
         obs: torch.Tensor,
         task_ids: Optional[torch.Tensor],
         state: RecurrentState,
+        timer: Optional[StageTimer] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], KVCache]:
         if input_ids.dtype != torch.long:
             raise TypeError("input_ids must be torch.long")
@@ -357,45 +363,48 @@ class CausalTransformerBackbone(nn.Module):
         if obs is None:
             raise ValueError("obs is required for forward_step")
 
-        token_embed = self.token_embed(input_ids)
-        obs_tokens = self.obs_tokenizer(obs) if self.obs_tokenizer is not None else None
-        include_special = self.use_special_tokens and obs is not None
-        x, act_index = self._combine_inputs(token_embed, obs_tokens, include_special)
-        if task_ids is not None and self.task_embed is not None:
-            if task_ids.dtype != torch.long:
-                raise TypeError("task_ids must be torch.long")
-            if task_ids.ndim != 1 or task_ids.shape[0] != input_ids.shape[0]:
-                raise ValueError("task_ids must have shape (B,)")
-            task_emb = self.task_embed(task_ids).unsqueeze(1)
-            x = x + task_emb
+        with timer.track("embed") if timer else nullcontext():
+            token_embed = self.token_embed(input_ids)
+            obs_tokens = self.obs_tokenizer(obs) if self.obs_tokenizer is not None else None
+            include_special = self.use_special_tokens and obs is not None
+            x, act_index = self._combine_inputs(token_embed, obs_tokens, include_special)
+            if task_ids is not None and self.task_embed is not None:
+                if task_ids.dtype != torch.long:
+                    raise TypeError("task_ids must be torch.long")
+                if task_ids.ndim != 1 or task_ids.shape[0] != input_ids.shape[0]:
+                    raise ValueError("task_ids must have shape (B,)")
+                task_emb = self.task_embed(task_ids).unsqueeze(1)
+                x = x + task_emb
 
         start_pos = self._kv_len(state.kv)
-        x = self._add_positions(x, start_pos=start_pos)
+        with timer.track("attn") if timer else nullcontext():
+            x = self._add_positions(x, start_pos=start_pos)
 
         kv_next = KVCache.empty(len(self.blocks))
         max_len = state.kv.max_len if state.kv is not None else None
         new_len = x.shape[1]
-        for idx, block in enumerate(self.blocks):
-            k_prev = None
-            v_prev = None
-            if state.kv.keys is not None:
-                k_prev = state.kv.keys[idx]
-            if state.kv.values is not None:
-                v_prev = state.kv.values[idx]
-            if max_len is not None and k_prev is not None and v_prev is not None:
-                allowed_past = max_len - new_len
-                if allowed_past < 0:
-                    allowed_past = 0
-                if k_prev.shape[2] > allowed_past:
-                    if allowed_past == 0:
-                        k_prev = k_prev[:, :, :0, :]
-                        v_prev = v_prev[:, :, :0, :]
-                    else:
-                        k_prev = k_prev[:, :, -allowed_past:, :]
-                        v_prev = v_prev[:, :, -allowed_past:, :]
-            x, (k_new, v_new) = block.forward_step(x, (k_prev, v_prev))
-            kv_next.keys[idx] = k_new
-            kv_next.values[idx] = v_new
+        with timer.track("attn") if timer else nullcontext():
+            for idx, block in enumerate(self.blocks):
+                k_prev = None
+                v_prev = None
+                if state.kv.keys is not None:
+                    k_prev = state.kv.keys[idx]
+                if state.kv.values is not None:
+                    v_prev = state.kv.values[idx]
+                if max_len is not None and k_prev is not None and v_prev is not None:
+                    allowed_past = max_len - new_len
+                    if allowed_past < 0:
+                        allowed_past = 0
+                    if k_prev.shape[2] > allowed_past:
+                        if allowed_past == 0:
+                            k_prev = k_prev[:, :, :0, :]
+                            v_prev = v_prev[:, :, :0, :]
+                        else:
+                            k_prev = k_prev[:, :, -allowed_past:, :]
+                            v_prev = v_prev[:, :, -allowed_past:, :]
+                x, (k_new, v_new) = block.forward_step(x, (k_prev, v_prev))
+                kv_next.keys[idx] = k_new
+                kv_next.values[idx] = v_new
         if max_len is not None:
             kv_next.max_len = max_len
 
@@ -405,6 +414,7 @@ class CausalTransformerBackbone(nn.Module):
         mem_next = None
         if self.memory is not None:
             h_pool = h_act if h_act is not None else h_last
-            mem_next = self.memory(state.mem, h_pool, timestep=state.timestep)
+            with timer.track("mem") if timer else nullcontext():
+                mem_next = self.memory(state.mem, h_pool, timestep=state.timestep)
 
         return x, h_last, h_act, mem_next, kv_next

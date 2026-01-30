@@ -21,7 +21,7 @@ from .heads import (
 )
 from .losses import budget_loss, language_loss, policy_loss, reflection_loss, total_loss, value_loss, world_loss
 from .memory import KVCache, RecurrentState
-from .utils import check_floating, check_shape
+from .utils import check_floating, check_shape, sanitize_tensor, validate_seq_len, StageTimer
 from .vision import ImageObsEncoder
 
 
@@ -108,13 +108,16 @@ class VAGICore(nn.Module):
         return_loss: bool = False,
         return_hidden: bool = False,
         image: Optional[torch.Tensor] = None,
+        timer: Optional[StageTimer] = None,
     ) -> Dict[str, Any]:
         """Forward pass for full sequences."""
         if input_ids.dtype != torch.long:
             raise TypeError("input_ids must be torch.long")
         check_shape(input_ids, (None, None), "input_ids")
+        validate_seq_len(input_ids, self.cfg.max_seq_len, name="input_ids")
 
         obs = self._resolve_obs(obs, image)
+        obs = self._sanitize_obs(obs)
         if obs is not None:
             check_shape(obs, (input_ids.shape[0], self.cfg.obs_dim), "obs")
             check_floating(obs, "obs")
@@ -129,13 +132,22 @@ class VAGICore(nn.Module):
             obs=obs,
             task_ids=task_ids,
             state=state,
+            timer=timer,
         )
 
         text_logits = self.lang(x)
         h_policy = h_act if h_act is not None else h_last
         action_logits = self.pi(h_policy)
-        value = self.v(h_policy)
-        world_pred = self.world(h_last) if self.world is not None else None
+        if timer:
+            with timer.track("value"):
+                value = self.v(h_policy)
+        else:
+            value = self.v(h_policy)
+        if timer and self.world is not None:
+            with timer.track("world"):
+                world_pred = self.world(h_last)
+        else:
+            world_pred = self.world(h_last) if self.world is not None else None
         value_logvar = self.value_logvar(h_policy) if self.value_logvar is not None else None
         world_logvar = self._format_world_logvar(h_last) if self.world_logvar is not None else None
         value_logvar = self._apply_obs_uncertainty(value_logvar, obs)
@@ -225,11 +237,14 @@ class VAGICore(nn.Module):
         state: RecurrentState,
         task_ids: Optional[torch.Tensor] = None,
         image: Optional[torch.Tensor] = None,
+        timer: Optional[StageTimer] = None,
     ) -> Dict[str, Any]:
         """Single-step inference with recurrent state update."""
         if state is None:
             raise ValueError("state is required for step()")
+        validate_seq_len(input_ids, self.cfg.max_seq_len, name="input_ids")
         obs = self._resolve_obs(obs, image)
+        obs = self._sanitize_obs(obs)
         if obs is None:
             raise ValueError("obs is required for step()")
         check_shape(obs, (input_ids.shape[0], self.cfg.obs_dim), "obs")
@@ -239,14 +254,27 @@ class VAGICore(nn.Module):
             obs=obs,
             task_ids=task_ids,
             state=state,
+            timer=timer,
         )
         h_policy = h_act if h_act is not None else h_last
+        if timer:
+            with timer.track("value"):
+                value = self.v(h_policy)
+            if self.world is not None:
+                with timer.track("world"):
+                    world_pred = self.world(h_last)
+            else:
+                world_pred = None
+        else:
+            value = self.v(h_policy)
+            world_pred = self.world(h_last) if self.world is not None else None
+
         outputs: Dict[str, Any] = {
             "text_logits": self.lang(x),
             "action_logits": self.pi(h_policy),
-            "value": self.v(h_policy),
+            "value": value,
             "value_logvar": None,
-            "world_pred": self.world(h_last) if self.world is not None else None,
+            "world_pred": world_pred,
             "world_logvar": None,
             "error_logits": self.error_head(h_policy) if self.error_head is not None else None,
             "info_gain": self.info_head(h_policy) if self.info_head is not None else None,
@@ -409,7 +437,9 @@ class VAGICore(nn.Module):
             raise ValueError("world model is required for plan_step")
         if state is None:
             raise ValueError("state is required for plan_step")
+        validate_seq_len(input_ids, self.cfg.max_seq_len, name="input_ids")
         obs = self._resolve_obs(obs, image)
+        obs = self._sanitize_obs(obs)
         if obs is None:
             raise ValueError("obs is required for plan_step")
         check_shape(obs, (input_ids.shape[0], self.cfg.obs_dim), "obs")
@@ -818,6 +848,11 @@ class VAGICore(nn.Module):
         if self.vision is None:
             raise ValueError("image provided but use_vision is disabled")
         return self.vision(image)
+
+    def _sanitize_obs(self, obs: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        if obs is None:
+            return None
+        return sanitize_tensor(obs, "obs")
 
     def _format_world_logvar(self, h_last: torch.Tensor) -> torch.Tensor:
         raw = self.world_logvar(h_last) if self.world_logvar is not None else None
