@@ -10,11 +10,11 @@ from typing import Optional
 import torch
 from torch.nn import functional as F
 
-from io.checkpoint import load_checkpoint, save_checkpoint
 from scripts.utils import get_lr, set_deterministic
 from utils.data.pack import pack_batches
 from utils.data.reader import read_jsonl
 from vagi_core import VAGIConfig, VAGICore
+from io.checkpoint import load_checkpoint, save_checkpoint
 
 
 def parse_args() -> argparse.Namespace:
