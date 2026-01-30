@@ -9,6 +9,7 @@ Notes:
 - Requires `onnx` package installed separately.
 - Exported graph includes text logits, action logits, and value outputs.
 - A metadata file is written alongside the export: `exports/vagi.onnx.meta.json`.
+- For static exports (recommended for quantization): `python -m scripts.export_onnx --out exports/vagi_full.onnx --static --legacy`
 
 ## Artifact naming convention
 Recommended export names:
@@ -53,6 +54,7 @@ Notes:
 - Requires `onnxruntime` package installed separately.
 - Uses dynamic weight-only quantization by default.
 - For fp16 conversion: `python -m scripts.quantize_onnx --input exports/vagi.onnx --output exports/vagi.fp16.onnx --mode fp16`
+- If shape inference fails: add `--disable-shape-infer`.
 
 ## TensorRT (optional)
 ```bash

@@ -105,20 +105,15 @@ def main() -> None:
     onnx_path = out_dir / "vagi.onnx"
     from scripts.export_onnx import VAGIOnnxWrapper
 
-    wrapper = VAGIOnnxWrapper(model)
+    wrapper = VAGIOnnxWrapper(model).eval()
     torch.onnx.export(
         wrapper,
         (input_ids, obs),
         onnx_path.as_posix(),
         input_names=["input_ids", "obs"],
         output_names=["text_logits", "action_logits", "value"],
-        dynamic_axes={
-            "input_ids": {0: "batch", 1: "seq"},
-            "obs": {0: "batch"},
-            "text_logits": {0: "batch", 1: "seq"},
-            "action_logits": {0: "batch"},
-            "value": {0: "batch"},
-        },
+        dynamic_axes=None,
+        dynamo=False,
         opset_version=17,
         do_constant_folding=True,
     )
@@ -134,6 +129,7 @@ def main() -> None:
         quant_path.as_posix(),
         "--mode",
         args.quant_mode,
+        "--disable-shape-infer",
     ]
     import sys
 

@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-type", type=str, default="int8", choices=["int8", "uint8"])
     parser.add_argument("--per-channel", action="store_true")
     parser.add_argument("--reduce-range", action="store_true")
+    parser.add_argument("--disable-shape-infer", action="store_true")
     parser.add_argument("--meta-in", type=str, default=None)
     parser.add_argument("--meta-out", type=str, default=None)
     return parser.parse_args()
@@ -52,12 +53,14 @@ def main() -> None:
                 "onnxruntime is required for int8 quantization. Install via `pip install onnxruntime`."
             ) from exc
         weight_type = QuantType.QInt8 if mode == "int8" else QuantType.QUInt8
+        extra_options = {"DisableShapeInference": True} if args.disable_shape_infer else None
         quantize_dynamic(
             model_input=input_path.as_posix(),
             model_output=output_path.as_posix(),
             weight_type=weight_type,
             per_channel=args.per_channel,
             reduce_range=args.reduce_range,
+            extra_options=extra_options,
         )
     meta_in = Path(args.meta_in) if args.meta_in else meta_path_for(input_path)
     base_meta = load_metadata(meta_in) if meta_in.exists() else None

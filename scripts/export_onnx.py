@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--action-dim", type=int, default=8)
     parser.add_argument("--memory-slots", type=int, default=4)
     parser.add_argument("--meta-out", type=str, default=None)
+    parser.add_argument("--static", action="store_true", help="Export with fixed input shapes.")
+    parser.add_argument("--legacy", action="store_true", help="Use legacy (non-dynamo) exporter.")
     return parser.parse_args()
 
 
@@ -63,8 +65,10 @@ def main() -> None:
         dropout=0.0,
         use_world_pred=False,
     )
-    model = VAGICore(cfg).eval()
+    model = VAGICore(cfg)
+    model.eval()
     wrapper = VAGIOnnxWrapper(model)
+    wrapper.eval()
 
     input_ids = torch.zeros((args.batch_size, args.seq_len), dtype=torch.long)
     obs = torch.zeros((args.batch_size, args.obs_dim), dtype=torch.float32)
@@ -72,19 +76,23 @@ def main() -> None:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    dynamic_axes = None
+    if not args.static:
+        dynamic_axes = {
+            "input_ids": {0: "batch", 1: "seq"},
+            "obs": {0: "batch"},
+            "text_logits": {0: "batch", 1: "seq"},
+            "action_logits": {0: "batch"},
+            "value": {0: "batch"},
+        }
     torch.onnx.export(
         wrapper,
         (input_ids, obs),
         out_path.as_posix(),
         input_names=["input_ids", "obs"],
         output_names=["text_logits", "action_logits", "value"],
-        dynamic_axes={
-            "input_ids": {0: "batch", 1: "seq"},
-            "obs": {0: "batch"},
-            "text_logits": {0: "batch", 1: "seq"},
-            "action_logits": {0: "batch"},
-            "value": {0: "batch"},
-        },
+        dynamic_axes=dynamic_axes,
+        dynamo=not args.legacy,
         opset_version=args.opset,
         do_constant_folding=True,
     )
