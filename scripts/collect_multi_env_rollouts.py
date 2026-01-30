@@ -18,7 +18,7 @@ from scripts.baseline_random import action_from_type as action_from_type_random
 from scripts.bench_utils import collect_tasks
 from scripts.utils import set_deterministic
 from utils.data.schema import SCHEMA_VERSION
-from vagi_core import VAGIConfig, VAGICore
+from vagi_core import RecurrentState, VAGIConfig, VAGICore
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,7 +67,7 @@ def _encode_obs(model: VAGICore, obs: torch.Tensor, *, use_image: bool) -> List[
 def _select_action(
     model: VAGICore,
     obs: torch.Tensor,
-    state: torch.Tensor,
+    state: RecurrentState,
     *,
     policy: str,
     mode: str,
@@ -128,6 +128,7 @@ def collect_rollouts(
     mode: str,
     seed: int,
     deterministic: bool,
+    model: Optional[VAGICore] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, Dict[str, float]]]:
     if episodes_per_env <= 0:
         raise ValueError("episodes_per_env must be > 0")
@@ -135,25 +136,26 @@ def collect_rollouts(
         raise ValueError("episodes_per_task must be > 0")
 
     set_deterministic(seed, deterministic)
-    action_dim = max(toy_action_dim, ACTION_DIM, ui_image_size * ui_image_size)
-    cfg = VAGIConfig(
-        vocab_size=max(32, action_dim + 1),
-        hidden_size=64,
-        n_layers=2,
-        n_heads=4,
-        n_kv_heads=4,
-        mlp_ratio=2.0,
-        max_seq_len=8,
-        obs_dim=obs_dim,
-        obs_tokens=2,
-        action_dim=action_dim,
-        memory_slots=4,
-        dropout=0.0,
-        use_world_pred=(mode == "think"),
-        use_vision=True,
-        vision_channels=ui_channels,
-    )
-    model = VAGICore(cfg)
+    if model is None:
+        action_dim = max(toy_action_dim, ACTION_DIM, ui_image_size * ui_image_size)
+        cfg = VAGIConfig(
+            vocab_size=max(32, action_dim + 1),
+            hidden_size=64,
+            n_layers=2,
+            n_heads=4,
+            n_kv_heads=4,
+            mlp_ratio=2.0,
+            max_seq_len=8,
+            obs_dim=obs_dim,
+            obs_tokens=2,
+            action_dim=action_dim,
+            memory_slots=4,
+            dropout=0.0,
+            use_world_pred=(mode == "think"),
+            use_vision=True,
+            vision_channels=ui_channels,
+        )
+        model = VAGICore(cfg)
     model.eval()
 
     records: List[Dict[str, object]] = []
