@@ -88,7 +88,7 @@ class FastMemory(nn.Module):
         return mem
 
 
-SPECIAL_TOKENS = ("<OBS>", "<ACT>", "<VAL>")
+SPECIAL_TOKENS = ("<ACT>",)
 
 
 class FeedForward(nn.Module):
@@ -267,19 +267,13 @@ class CausalTransformerBackbone(nn.Module):
         bsz = token_embed.shape[0]
         chunks = []
         act_index = None
-        if include_special and self.special_embed is not None:
-            special = self.special_embed.weight.unsqueeze(0).expand(bsz, -1, -1)
-            obs_token = special[:, 0:1, :]
-            act_token = special[:, 1:2, :]
-            val_token = special[:, 2:3, :]
-            chunks.append(obs_token)
         if obs_tokens is not None:
             chunks.append(obs_tokens)
         chunks.append(token_embed)
         if include_special and self.special_embed is not None:
-            act_index = sum(chunk.shape[1] for chunk in chunks)
+            act_token = self.special_embed.weight.unsqueeze(0).expand(bsz, -1, -1)
             chunks.append(act_token)
-            chunks.append(val_token)
+            act_index = sum(chunk.shape[1] for chunk in chunks) - 1
         x = torch.cat(chunks, dim=1)
         return x, act_index
 
@@ -313,7 +307,7 @@ class CausalTransformerBackbone(nn.Module):
         with timer.track("embed") if timer else nullcontext():
             token_embed = self.token_embed(input_ids)
             obs_tokens = None
-            include_special = self.use_special_tokens and obs is not None
+            include_special = self.use_special_tokens
             if obs is not None and self.obs_tokenizer is not None:
                 obs_tokens = self.obs_tokenizer(obs)
 
@@ -366,7 +360,7 @@ class CausalTransformerBackbone(nn.Module):
         with timer.track("embed") if timer else nullcontext():
             token_embed = self.token_embed(input_ids)
             obs_tokens = self.obs_tokenizer(obs) if self.obs_tokenizer is not None else None
-            include_special = self.use_special_tokens and obs is not None
+            include_special = self.use_special_tokens
             x, act_index = self._combine_inputs(token_embed, obs_tokens, include_special)
             if task_ids is not None and self.task_embed is not None:
                 if task_ids.dtype != torch.long:

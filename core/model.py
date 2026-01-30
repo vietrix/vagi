@@ -19,7 +19,16 @@ from .heads import (
     ValueHead,
     WorldHead,
 )
-from .losses import budget_loss, language_loss, policy_loss, reflection_loss, total_loss, value_loss, world_loss
+from .losses import (
+    budget_loss,
+    imagination_consistency_loss,
+    language_loss,
+    policy_loss,
+    reflection_loss,
+    total_loss,
+    value_loss,
+    world_loss,
+)
 from .memory import KVCache, RecurrentState
 from .utils import check_floating, check_shape, sanitize_tensor, validate_seq_len, StageTimer
 from .vision import ImageObsEncoder
@@ -145,11 +154,11 @@ class VAGICore(nn.Module):
             value = self.v(h_policy)
         if timer and self.world is not None:
             with timer.track("world"):
-                world_pred = self.world(h_last)
+                world_pred = self.world(h_policy)
         else:
-            world_pred = self.world(h_last) if self.world is not None else None
+            world_pred = self.world(h_policy) if self.world is not None else None
         value_logvar = self.value_logvar(h_policy) if self.value_logvar is not None else None
-        world_logvar = self._format_world_logvar(h_last) if self.world_logvar is not None else None
+        world_logvar = self._format_world_logvar(h_policy) if self.world_logvar is not None else None
         value_logvar = self._apply_obs_uncertainty(value_logvar, obs)
         world_logvar = self._apply_obs_uncertainty(world_logvar, obs)
         error_logits = self.error_head(h_policy) if self.error_head is not None else None
@@ -190,9 +199,9 @@ class VAGICore(nn.Module):
             if labels is not None:
                 if labels.dtype != torch.long:
                     raise TypeError("labels must be torch.long")
-                include_special = self.cfg.use_special_tokens and obs is not None
-                k_prefix = self.cfg.obs_tokens + (1 if include_special else 0) if obs is not None else 0
-                k_suffix = 2 if include_special else 0
+                include_special = self.cfg.use_special_tokens
+                k_prefix = self.cfg.obs_tokens if obs is not None else 0
+                k_suffix = 1 if include_special else 0
                 losses["language"] = language_loss(text_logits, labels, k_prefix=k_prefix, k_suffix=k_suffix)
             targets = targets or {}
             if "actions" in targets:
@@ -204,6 +213,13 @@ class VAGICore(nn.Module):
                     losses["world"] = world_loss(world_pred, targets["obs_future"], logvar=world_logvar)
                 elif "obs_next" in targets:
                     losses["world"] = world_loss(world_pred, targets["obs_next"], logvar=world_logvar)
+                if targets.get("world_consistency") or "world_consistency" in (targets.get("loss_weights") or {}):
+                    max_delta = float(targets.get("world_consistency_max_delta", 1.0))
+                    losses["world_consistency"] = imagination_consistency_loss(
+                        world_pred,
+                        world_logvar,
+                        max_delta=max_delta,
+                    )
             reflection = reflection_loss(
                 error_logits,
                 targets.get("error_types") if targets else None,
@@ -262,12 +278,12 @@ class VAGICore(nn.Module):
                 value = self.v(h_policy)
             if self.world is not None:
                 with timer.track("world"):
-                    world_pred = self.world(h_last)
+                    world_pred = self.world(h_policy)
             else:
                 world_pred = None
         else:
             value = self.v(h_policy)
-            world_pred = self.world(h_last) if self.world is not None else None
+            world_pred = self.world(h_policy) if self.world is not None else None
 
         outputs: Dict[str, Any] = {
             "text_logits": self.lang(x),
@@ -291,7 +307,7 @@ class VAGICore(nn.Module):
         if self.value_logvar is not None:
             outputs["value_logvar"] = self._apply_obs_uncertainty(self.value_logvar(h_policy), obs)
         if self.world_logvar is not None:
-            outputs["world_logvar"] = self._apply_obs_uncertainty(self._format_world_logvar(h_last), obs)
+            outputs["world_logvar"] = self._apply_obs_uncertainty(self._format_world_logvar(h_policy), obs)
         if outputs["state"] is not None:
             state_out = outputs["state"]
             outputs["state"] = RecurrentState(
@@ -854,11 +870,11 @@ class VAGICore(nn.Module):
             return None
         return sanitize_tensor(obs, "obs")
 
-    def _format_world_logvar(self, h_last: torch.Tensor) -> torch.Tensor:
-        raw = self.world_logvar(h_last) if self.world_logvar is not None else None
+    def _format_world_logvar(self, h_pool: torch.Tensor) -> torch.Tensor:
+        raw = self.world_logvar(h_pool) if self.world_logvar is not None else None
         if raw is None:
             raise ValueError("world_logvar head is not initialized")
-        return raw.view(h_last.shape[0], self.cfg.world_model_horizon, self.cfg.obs_dim)
+        return raw.view(h_pool.shape[0], self.cfg.world_model_horizon, self.cfg.obs_dim)
 
     def _apply_obs_uncertainty(
         self,

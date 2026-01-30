@@ -74,6 +74,37 @@ def world_loss(
     return gaussian_nll_loss(mean, logvar, obs_next)
 
 
+def imagination_consistency_loss(
+    world_pred: torch.Tensor,
+    logvar: Optional[torch.Tensor] = None,
+    max_delta: float = 1.0,
+) -> torch.Tensor:
+    """Penalize implausible drift across imagined world steps."""
+    if world_pred.ndim == 2:
+        world_pred = world_pred.unsqueeze(1)
+    if world_pred.ndim != 3:
+        raise ValueError("world_pred must have shape (B, H, O)")
+    if world_pred.shape[1] < 2:
+        return torch.zeros((), device=world_pred.device)
+
+    deltas = torch.abs(world_pred[:, 1:, :] - world_pred[:, :-1, :])
+    penalty = torch.relu(deltas - max_delta)
+    penalty = penalty ** 2
+
+    if logvar is not None:
+        if logvar.ndim == 2:
+            logvar = logvar.unsqueeze(1)
+        if logvar.ndim != 3:
+            raise ValueError("logvar must have shape (B, H, O)")
+        if logvar.shape[1] == 1:
+            logvar = logvar.expand(-1, world_pred.shape[1], -1)
+        weight = torch.exp(-logvar)
+        weight = 0.5 * (weight[:, 1:, :] + weight[:, :-1, :])
+        penalty = penalty * weight
+
+    return torch.mean(penalty)
+
+
 def total_loss(losses: Dict[str, torch.Tensor], weights: Optional[Dict[str, float]] = None) -> torch.Tensor:
     weights = weights or {}
     total = None
