@@ -10,6 +10,7 @@ from torch import nn
 from .backbone import CausalTransformerBackbone
 from .config import VAGIConfig
 from .heads import (
+    ActionValidityHead,
     BudgetHead,
     ErrorTypeHead,
     InfoGainHead,
@@ -43,6 +44,7 @@ class VAGICore(nn.Module):
         self.backbone = CausalTransformerBackbone(cfg)
         self.lang = LanguageHead(cfg.hidden_size, cfg.vocab_size)
         self.pi = PolicyHead(cfg.hidden_size, cfg.action_dim)
+        self.action_valid = ActionValidityHead(cfg.hidden_size, cfg.action_dim) if cfg.use_action_validity else None
         self.v = ValueHead(cfg.hidden_size)
         self.value_logvar = LogVarHead(cfg.hidden_size, 1) if cfg.use_uncertainty else None
         self.error_head = ErrorTypeHead(cfg.hidden_size, cfg.error_type_dim) if cfg.use_reflection else None
@@ -147,6 +149,7 @@ class VAGICore(nn.Module):
         text_logits = self.lang(x)
         h_policy = h_act if h_act is not None else h_last
         action_logits = self.pi(h_policy)
+        action_valid = torch.sigmoid(self.action_valid(h_policy)) if self.action_valid is not None else None
         if timer:
             with timer.track("value"):
                 value = self.v(h_policy)
@@ -188,6 +191,7 @@ class VAGICore(nn.Module):
         outputs: Dict[str, Any] = {
             "text_logits": text_logits,
             "action_logits": action_logits,
+            "action_valid": action_valid,
             "value": value,
             "value_logvar": value_logvar,
             "world_pred": world_pred,
@@ -300,6 +304,7 @@ class VAGICore(nn.Module):
         outputs: Dict[str, Any] = {
             "text_logits": self.lang(x),
             "action_logits": self.pi(h_policy),
+            "action_valid": torch.sigmoid(self.action_valid(h_policy)) if self.action_valid is not None else None,
             "value": value,
             "value_logvar": None,
             "world_pred": world_pred,
@@ -361,7 +366,14 @@ class VAGICore(nn.Module):
     ) -> Dict[str, Any]:
         """Fast policy-only action selection."""
         out = self.step(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids, image=image)
-        action = torch.argmax(out["action_logits"], dim=-1)
+        action_logits = out["action_logits"]
+        action_valid = out.get("action_valid")
+        action_logits, _mask = self._apply_action_validity(
+            action_logits,
+            action_valid,
+            threshold=self.cfg.action_validity_threshold,
+        )
+        action = torch.argmax(action_logits, dim=-1)
         return {
             "action": action,
             "mode": "act",
@@ -392,6 +404,10 @@ class VAGICore(nn.Module):
         min_confidence_to_act: Optional[float] = None,
         policy_only: bool = False,
         trace: bool = False,
+        action_validity_threshold: Optional[float] = None,
+        ood_uncertainty_threshold: Optional[float] = None,
+        ood_trace_threshold: Optional[float] = None,
+        ood_policy: Optional[str] = None,
         uncertainty_fallback: Optional[float] = None,
         error_stop_prob: Optional[float] = None,
         error_stop_ids: Optional[list[int]] = None,
@@ -441,6 +457,10 @@ class VAGICore(nn.Module):
             min_confidence_to_act=min_confidence_to_act,
             policy_only=policy_only,
             trace=trace,
+            action_validity_threshold=action_validity_threshold,
+            ood_uncertainty_threshold=ood_uncertainty_threshold,
+            ood_trace_threshold=ood_trace_threshold,
+            ood_policy=ood_policy,
             strategy=strategy,
             uncertainty_fallback=uncertainty_fallback,
             error_stop_prob=error_stop_prob,
@@ -483,6 +503,10 @@ class VAGICore(nn.Module):
         min_confidence_to_act: Optional[float] = None,
         policy_only: bool = False,
         trace: bool = False,
+        action_validity_threshold: Optional[float] = None,
+        ood_uncertainty_threshold: Optional[float] = None,
+        ood_trace_threshold: Optional[float] = None,
+        ood_policy: Optional[str] = None,
         strategy: str = "cem",
         cem_iters: int = 3,
         elite_frac: float = 0.2,
@@ -524,6 +548,17 @@ class VAGICore(nn.Module):
             image=image,
         )
         action_logits = base["action_logits"]
+        action_valid = base.get("action_valid")
+        validity_threshold = (
+            float(action_validity_threshold)
+            if action_validity_threshold is not None
+            else float(self.cfg.action_validity_threshold)
+        )
+        action_logits, _valid_mask = self._apply_action_validity(
+            action_logits,
+            action_valid,
+            threshold=validity_threshold,
+        )
         base_uncertainty = self._mean_uncertainty(base.get("world_logvar"), base.get("value_logvar"))
         uncertainty_tensor = self._uncertainty_tensor(
             base.get("world_logvar"),
@@ -553,6 +588,57 @@ class VAGICore(nn.Module):
             budget_summary["horizon"] = min(int(budget_summary.get("horizon", horizon)), horizon)
 
         stop_reason = None
+        ood_threshold = (
+            float(ood_uncertainty_threshold)
+            if ood_uncertainty_threshold is not None
+            else float(self.cfg.ood_uncertainty_threshold)
+        )
+        ood_policy = ood_policy or self.cfg.ood_policy
+        if ood_threshold > 0.0 and base_uncertainty > ood_threshold:
+            if ood_policy == "refuse":
+                greedy = torch.argmax(action_logits, dim=-1)
+                return {
+                    "action": greedy,
+                    "action_logits": action_logits,
+                    "candidate_actions": greedy.unsqueeze(-1),
+                    "candidate_values": torch.full(
+                        (obs.shape[0], 1),
+                        float(base["value"].mean().item()),
+                        device=obs.device,
+                        dtype=obs.dtype,
+                    ),
+                    "early_stop": True,
+                    "mode": "act",
+                    "confidence": confidence,
+                    "uncertainty": uncertainty_tensor,
+                    "budget": budget_summary,
+                    "stopReason": "refuse",
+                    "trace": None,
+                }
+            if ood_policy == "info":
+                greedy = torch.argmax(action_logits, dim=-1)
+                return {
+                    "action": greedy,
+                    "action_logits": action_logits,
+                    "candidate_actions": greedy.unsqueeze(-1),
+                    "candidate_values": torch.full(
+                        (obs.shape[0], 1),
+                        float(base["value"].mean().item()),
+                        device=obs.device,
+                        dtype=obs.dtype,
+                    ),
+                    "early_stop": False,
+                    "mode": "act",
+                    "confidence": confidence,
+                    "uncertainty": uncertainty_tensor,
+                    "budget": budget_summary,
+                    "stopReason": "needsInfo",
+                    "trace": None,
+                }
+            horizon = max(1, horizon // 2)
+            num_candidates = max(1, num_candidates // 2)
+            uncertainty_weight = max(uncertainty_weight, uncertainty_weight * 1.5)
+            stop_reason = "unsure"
         if policy_only:
             greedy = torch.argmax(action_logits, dim=-1)
             return {
@@ -647,6 +733,23 @@ class VAGICore(nn.Module):
                 uncertainty_weight = max(uncertainty_weight, uncertainty_weight * 1.5)
                 stop_reason = "unsure"
 
+        trace_threshold = (
+            float(ood_trace_threshold)
+            if ood_trace_threshold is not None
+            else float(self.cfg.ood_trace_threshold)
+        )
+
+        def _apply_trace_threshold(result: Dict[str, Any]) -> Dict[str, Any]:
+            if trace_threshold <= 0.0:
+                return result
+            values = result.get("candidate_values")
+            if values is None:
+                return result
+            spread = float(values.std(dim=-1).mean().item())
+            if spread < trace_threshold:
+                result["stopReason"] = result.get("stopReason") or "unsure"
+            return result
+
         strategy_key = strategy.lower().strip()
         if strategy_key == "sample":
             result = self._plan_sample(
@@ -665,7 +768,7 @@ class VAGICore(nn.Module):
             result["uncertainty"] = uncertainty_tensor
             result["budget"] = budget_summary
             result["stopReason"] = stop_reason
-            return result
+            return _apply_trace_threshold(result)
         if strategy_key == "tree":
             result = self._plan_tree(
                 action_logits=action_logits,
@@ -683,7 +786,7 @@ class VAGICore(nn.Module):
             result["uncertainty"] = uncertainty_tensor
             result["budget"] = budget_summary
             result["stopReason"] = stop_reason
-            return result
+            return _apply_trace_threshold(result)
         result = self._plan_cem(
             action_logits=action_logits,
             obs=obs,
@@ -702,7 +805,7 @@ class VAGICore(nn.Module):
         result["uncertainty"] = uncertainty_tensor
         result["budget"] = budget_summary
         result["stopReason"] = stop_reason
-        return result
+        return _apply_trace_threshold(result)
 
     def _score_sequence(
         self,
@@ -1040,6 +1143,26 @@ class VAGICore(nn.Module):
             values = [v[index : index + 1].clone() if v is not None else None for v in state.kv.values]
         kv = KVCache(keys=keys, values=values, max_len=state.kv.max_len)
         return RecurrentState(mem=mem, kv=kv, timestep=state.timestep)
+
+    @staticmethod
+    def _apply_action_validity(
+        action_logits: torch.Tensor,
+        action_valid: Optional[torch.Tensor],
+        *,
+        threshold: float,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        if action_valid is None:
+            return action_logits, None
+        if action_valid.shape != action_logits.shape:
+            raise ValueError("action_valid must match action_logits shape")
+        mask = action_valid >= threshold
+        if mask.sum(dim=-1).min().item() == 0:
+            best = torch.argmax(action_valid, dim=-1)
+            for b in range(mask.shape[0]):
+                mask[b, best[b]] = True
+        masked = action_logits.clone()
+        masked[~mask] = -1e9
+        return masked, mask
 
     def _resolve_obs(
         self,

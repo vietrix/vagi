@@ -52,6 +52,7 @@ def outputs_to_payload(outputs: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "textLogits": tensor_to_list(outputs.get("text_logits")),
         "actionLogits": tensor_to_list(outputs.get("action_logits")),
+        "actionValid": tensor_to_list(outputs.get("action_valid")),
         "value": tensor_to_list(outputs.get("value")),
         "valueLogvar": tensor_to_list(outputs.get("value_logvar")),
         "worldPred": tensor_to_list(outputs.get("world_pred")),

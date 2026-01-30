@@ -30,6 +30,7 @@ def test_step_consistency() -> None:
         assert set(out.keys()) == {
             "text_logits",
             "action_logits",
+            "action_valid",
             "value",
             "value_logvar",
             "world_pred",

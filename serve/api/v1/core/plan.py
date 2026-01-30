@@ -37,6 +37,10 @@ async def plan_core(request: Request):
         min_confidence = payload.get("minConfidenceToAct")
         policy_only = bool(payload.get("policyOnly", False))
         trace = bool(payload.get("trace", False))
+        action_validity_threshold = payload.get("actionValidityThreshold")
+        ood_uncertainty = payload.get("oodUncertaintyThreshold")
+        ood_trace = payload.get("oodTraceThreshold")
+        ood_policy = payload.get("oodPolicy")
         strategy = str(payload.get("strategy", "cem"))
 
         adapter = request.app.state.adapter
@@ -56,6 +60,12 @@ async def plan_core(request: Request):
             min_confidence_to_act=float(min_confidence) if min_confidence is not None else None,
             policy_only=policy_only,
             trace=trace,
+            action_validity_threshold=float(action_validity_threshold)
+            if action_validity_threshold is not None
+            else None,
+            ood_uncertainty_threshold=float(ood_uncertainty) if ood_uncertainty is not None else None,
+            ood_trace_threshold=float(ood_trace) if ood_trace is not None else None,
+            ood_policy=str(ood_policy) if ood_policy is not None else None,
             strategy=strategy,
         )
 

@@ -40,6 +40,11 @@ class VAGIConfig:
     use_confidence: bool = False
     use_uncertainty: bool = False
     uncertainty_obs_scale: float = 0.0
+    use_action_validity: bool = False
+    action_validity_threshold: float = 0.5
+    ood_uncertainty_threshold: float = 0.0
+    ood_trace_threshold: float = 0.0
+    ood_policy: str = "fallback"
     memory_decay: float = 1.0
     memory_protect: bool = False
     memory_consolidate_every: int = 0
@@ -102,5 +107,11 @@ class VAGIConfig:
             raise ValueError("memory_consolidate_every must be >= 0")
         if self.uncertainty_obs_scale < 0.0:
             raise ValueError("uncertainty_obs_scale must be >= 0")
+        if not (0.0 <= self.action_validity_threshold <= 1.0):
+            raise ValueError("action_validity_threshold must be in [0, 1]")
+        if self.ood_uncertainty_threshold < 0.0:
+            raise ValueError("ood_uncertainty_threshold must be >= 0")
+        if self.ood_trace_threshold < 0.0:
+            raise ValueError("ood_trace_threshold must be >= 0")
         if not (0.0 <= self.dropout < 1.0):
             raise ValueError("dropout must be in [0, 1)")
