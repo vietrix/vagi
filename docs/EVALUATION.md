@@ -12,6 +12,7 @@ This document describes the evaluation setup for vAGI and baseline agents.
 - Single run: `python -m scripts.bench_code_env`
 - Multi-seed reproducibility: `python -m scripts.run_all_benchmarks`
 - Baselines: `python -m scripts.eval_baselines`
+- Cross-env generalization: `python -m scripts.bench_cross_env`
 
 ## Baselines
 ### Random baseline
@@ -56,6 +57,13 @@ This document describes the evaluation setup for vAGI and baseline agents.
 ### results/ablations/
 - `fast_memory.json/.csv`, `world_head.json/.csv`, `kv_cache.json/.csv`.
 - Each file reports per-task metrics for the ablated feature.
+
+### results/cross_env.json
+- Cross-env summary for ToyEnv, CodeEnv, and UIEnv.
+- Fields: `summary`, `by_env`, `by_task`, and per-episode `records`.
+
+### results/cross_env.csv
+- Row per episode with `env`, `task`, `seed`, `agent`, `success`, `steps`, `reward`, `latency_s`.
 
 ### results/baselines.json
 - Aggregate metrics per agent and per-episode records.
