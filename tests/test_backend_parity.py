@@ -66,7 +66,7 @@ def test_backend_parity(tmp_path: Path) -> None:
                 world = world[:, 0, :]
             return outputs["text_logits"], outputs["action_logits"], outputs["value"], world
 
-    wrapper = Wrapper(model)
+    wrapper = Wrapper(model).eval()
     onnx_path = tmp_path / "parity.onnx"
     torch.onnx.export(
         wrapper,

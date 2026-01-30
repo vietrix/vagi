@@ -52,12 +52,12 @@ def sanitize_tensor(
     """Replace NaN/Inf with finite values and clamp to a safe range."""
     if not tensor.is_floating_point():
         return tensor
-    if torch.isnan(tensor).any() or torch.isinf(tensor).any():
-        tensor = torch.nan_to_num(tensor, nan=0.0, posinf=clamp_max, neginf=clamp_min)
+    tensor = torch.nan_to_num(tensor, nan=0.0, posinf=clamp_max, neginf=clamp_min)
     if clamp_min is not None and clamp_max is not None:
         tensor = torch.clamp(tensor, min=clamp_min, max=clamp_max)
-    if torch.isnan(tensor).any() or torch.isinf(tensor).any():
-        raise ValueError(f"{name} contains NaN/Inf after sanitization")
+    if not torch.onnx.is_in_onnx_export():
+        if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+            raise ValueError(f"{name} contains NaN/Inf after sanitization")
     return tensor
 
 
