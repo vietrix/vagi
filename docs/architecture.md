@@ -6,6 +6,7 @@ This document describes the vAGI core model and its minimal training/runtime sta
 - Single causal transformer decoder (pre-norm).
 - Optional observation tokens prepended to text tokens.
 - Multi-head outputs: language logits, policy logits, value, and optional world prediction.
+- Optional vision encoder projects image observations into `obs_dim` vectors before tokenization.
 
 ## State and memory
 - `RecurrentState` tracks:
