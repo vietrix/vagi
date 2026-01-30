@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import torch
 from torch import nn
 
 from vagi_core import VAGIConfig, VAGICore
+from scripts.export_utils import build_metadata, write_metadata
 
 
 class VAGIOnnxWrapper(nn.Module):
@@ -35,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--obs-tokens", type=int, default=2)
     parser.add_argument("--action-dim", type=int, default=8)
     parser.add_argument("--memory-slots", type=int, default=4)
+    parser.add_argument("--meta-out", type=str, default=None)
     return parser.parse_args()
 
 
@@ -85,6 +88,15 @@ def main() -> None:
         opset_version=args.opset,
         do_constant_folding=True,
     )
+    meta = build_metadata(cfg=cfg, export_format="onnx")
+    if args.meta_out:
+        meta_path = Path(args.meta_out)
+        if meta_path.suffix == ".json":
+            meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        else:
+            write_metadata(meta_path, meta)
+    else:
+        write_metadata(out_path, meta)
     print(f"Exported ONNX to {out_path}")
 
 

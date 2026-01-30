@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
+from scripts.export_utils import build_metadata, load_metadata, meta_path_for, write_metadata
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build TensorRT engine from ONNX.")
@@ -15,6 +17,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--obs-dim", type=int, default=16)
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--workspace-mb", type=int, default=512)
+    parser.add_argument("--meta-in", type=str, default=None)
+    parser.add_argument("--meta-out", type=str, default=None)
     return parser.parse_args()
 
 
@@ -62,6 +66,23 @@ def main() -> None:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(engine_data)
+    meta_in = Path(args.meta_in) if args.meta_in else meta_path_for(Path(args.onnx))
+    base_meta = load_metadata(meta_in) if meta_in.exists() else None
+    meta = build_metadata(
+        cfg=None,
+        export_format="tensorrt",
+        quantization="fp16" if args.fp16 else None,
+        source=str(args.onnx),
+        base_meta=base_meta,
+    )
+    if args.meta_out:
+        meta_path = Path(args.meta_out)
+        if meta_path.suffix == ".json":
+            meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        else:
+            write_metadata(meta_path, meta)
+    else:
+        write_metadata(out_path, meta)
     print(f"Wrote TensorRT engine to {out_path}")
 
 

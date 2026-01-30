@@ -64,4 +64,6 @@ Logs and rollouts are scrubbed for common PII patterns by default. See
 
 ```bash
 python -m scripts.export_onnx --out exports/vagi.onnx
+python -m scripts.quantize_onnx --input exports/vagi.onnx --output exports/vagi.int8.onnx
+python -m scripts.check_export_parity --quant-mode int8 --runs 50
 ```

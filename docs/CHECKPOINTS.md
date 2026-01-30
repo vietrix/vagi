@@ -41,3 +41,5 @@ This keeps the model close to a stable anchor during distillation or replay.
 
 ONNX/TensorRT exports are optional and should be created only when needed for deployment.
 Use a separate output directory and record model version + config in metadata.
+
+Export helpers write `{artifact}.meta.json` with schema version, git SHA, and config hash.
