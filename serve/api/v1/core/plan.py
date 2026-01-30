@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from serve.runtime.errors import error_response
-from serve.schemas.core import parse_input_ids, parse_obs, parse_task_ids, tensor_to_list
+from serve.schemas.core import budget_to_payload, parse_input_ids, parse_obs, parse_task_ids, tensor_to_list
 
 router = APIRouter()
 
@@ -30,6 +30,13 @@ async def plan_core(request: Request):
         horizon = int(payload.get("horizon", 3))
         uncertainty_weight = float(payload.get("uncertaintyWeight", 1.0))
         info_gain_weight = float(payload.get("infoGainWeight", 0.0))
+        max_horizon = payload.get("maxHorizon")
+        max_candidates = payload.get("maxCandidates")
+        max_steps = payload.get("maxSteps")
+        risk_penalty = payload.get("riskPenalty")
+        min_confidence = payload.get("minConfidenceToAct")
+        policy_only = bool(payload.get("policyOnly", False))
+        trace = bool(payload.get("trace", False))
         strategy = str(payload.get("strategy", "cem"))
 
         adapter = request.app.state.adapter
@@ -42,6 +49,13 @@ async def plan_core(request: Request):
             horizon=horizon,
             uncertainty_weight=uncertainty_weight,
             info_gain_weight=info_gain_weight,
+            max_horizon=int(max_horizon) if max_horizon is not None else None,
+            max_candidates=int(max_candidates) if max_candidates is not None else None,
+            max_steps=int(max_steps) if max_steps is not None else None,
+            risk_penalty=float(risk_penalty) if risk_penalty is not None else None,
+            min_confidence_to_act=float(min_confidence) if min_confidence is not None else None,
+            policy_only=policy_only,
+            trace=trace,
             strategy=strategy,
         )
 
@@ -53,6 +67,11 @@ async def plan_core(request: Request):
             "candidateValues": tensor_to_list(outputs.get("candidate_values")),
             "mode": outputs.get("mode"),
             "earlyStop": outputs.get("early_stop"),
+            "confidence": tensor_to_list(outputs.get("confidence")),
+            "uncertainty": tensor_to_list(outputs.get("uncertainty")),
+            "budget": budget_to_payload(outputs.get("budget")),
+            "stopReason": outputs.get("stopReason"),
+            "trace": outputs.get("trace"),
         }
         return response
     except Exception as exc:

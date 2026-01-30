@@ -38,6 +38,16 @@ def tensor_to_list(value: Optional[torch.Tensor]) -> Optional[list]:
     return value.detach().cpu().tolist()
 
 
+def budget_to_payload(budget: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if budget is None:
+        return None
+    return {
+        "mode": budget.get("mode"),
+        "horizon": budget.get("horizon"),
+        "numCandidates": budget.get("numCandidates", budget.get("num_candidates")),
+    }
+
+
 def outputs_to_payload(outputs: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "textLogits": tensor_to_list(outputs.get("text_logits")),
@@ -51,4 +61,8 @@ def outputs_to_payload(outputs: Dict[str, Any]) -> Dict[str, Any]:
         "budgetModeLogits": tensor_to_list(outputs.get("budget_mode_logits")),
         "budgetHorizonLogits": tensor_to_list(outputs.get("budget_horizon_logits")),
         "budgetCandidateLogits": tensor_to_list(outputs.get("budget_candidate_logits")),
+        "confidence": tensor_to_list(outputs.get("confidence")),
+        "uncertainty": tensor_to_list(outputs.get("uncertainty")),
+        "budget": budget_to_payload(outputs.get("budget")),
+        "stopReason": outputs.get("stopReason"),
     }

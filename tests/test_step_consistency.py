@@ -39,6 +39,10 @@ def test_step_consistency() -> None:
             "budget_mode_logits",
             "budget_horizon_logits",
             "budget_candidate_logits",
+            "confidence",
+            "uncertainty",
+            "budget",
+            "stopReason",
             "state",
         }
         assert out["state"] is not None
