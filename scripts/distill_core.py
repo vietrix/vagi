@@ -28,8 +28,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--horizon", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--text-weight", type=float, default=0.0)
     parser.add_argument("--value-weight", type=float, default=0.5)
     parser.add_argument("--world-weight", type=float, default=0.5)
+    parser.add_argument("--uncertainty-weight", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--vocab-size", type=int, default=128)
@@ -58,6 +60,8 @@ def main() -> None:
     args = parse_args()
     set_deterministic(args.seed, args.deterministic)
 
+    use_world = args.world_weight > 0.0
+    use_uncertainty = args.uncertainty_weight > 0.0
     teacher_cfg = VAGIConfig(
         vocab_size=max(args.vocab_size, args.action_dim + 1),
         hidden_size=max(args.hidden_size * 2, args.hidden_size),
@@ -71,9 +75,9 @@ def main() -> None:
         action_dim=args.action_dim,
         memory_slots=max(args.memory_slots, 2),
         dropout=0.0,
-        use_world_pred=args.world_weight > 0.0,
+        use_world_pred=use_world,
         world_model_horizon=args.horizon,
-        use_uncertainty=args.world_weight > 0.0,
+        use_uncertainty=use_uncertainty,
     )
     teacher = VAGICore(teacher_cfg)
     load_checkpoint(teacher, optimizer=None, ckpt_path=args.teacher)
@@ -92,9 +96,9 @@ def main() -> None:
         action_dim=args.action_dim,
         memory_slots=args.memory_slots,
         dropout=0.0,
-        use_world_pred=args.world_weight > 0.0,
+        use_world_pred=use_world,
         world_model_horizon=args.horizon,
-        use_uncertainty=args.world_weight > 0.0,
+        use_uncertainty=use_uncertainty,
     )
     student = VAGICore(student_cfg)
     optimizer = torch.optim.AdamW(student.parameters(), lr=args.lr)
@@ -122,12 +126,25 @@ def main() -> None:
 
             student_out = student.forward(input_ids=input_ids, obs=obs, state=state, return_loss=False)
             loss = _distill_loss(student_out["action_logits"], teacher_out["action_logits"], args.temperature)
+            if args.text_weight > 0.0:
+                loss = loss + args.text_weight * _distill_loss(
+                    student_out["text_logits"], teacher_out["text_logits"], args.temperature
+                )
             loss = loss + args.value_weight * F.mse_loss(student_out["value"], teacher_out["value"])
 
             if student_out["world_pred"] is not None and teacher_out["world_pred"] is not None:
                 loss = loss + args.world_weight * F.mse_loss(
                     student_out["world_pred"], teacher_out["world_pred"].detach()
                 )
+            if args.uncertainty_weight > 0.0:
+                if student_out.get("value_logvar") is not None and teacher_out.get("value_logvar") is not None:
+                    loss = loss + args.uncertainty_weight * F.mse_loss(
+                        student_out["value_logvar"], teacher_out["value_logvar"].detach()
+                    )
+                if student_out.get("world_logvar") is not None and teacher_out.get("world_logvar") is not None:
+                    loss = loss + args.uncertainty_weight * F.mse_loss(
+                        student_out["world_logvar"], teacher_out["world_logvar"].detach()
+                    )
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()

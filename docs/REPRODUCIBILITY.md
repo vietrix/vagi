@@ -85,6 +85,13 @@ Outputs:
 - `runs/self_improve_multi_env/run_<timestamp>/history.json`
 - `runs/self_improve_multi_env/run_<timestamp>/history.csv`
 
+## Distillation
+Distill a smaller student from a teacher checkpoint (policy/value/world/uncertainty):
+
+```bash
+python -m scripts.distill_core --data logs/rollouts.jsonl --teacher runs/teacher/model.safetensors --uncertainty-weight 0.1
+```
+
 ## Seeds
 - Default seeds are `0..9` when `--seeds` is omitted.
 - Use `--deterministic` for deterministic PyTorch kernels.
