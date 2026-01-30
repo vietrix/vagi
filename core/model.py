@@ -22,6 +22,7 @@ from .heads import (
 from .losses import budget_loss, language_loss, policy_loss, reflection_loss, total_loss, value_loss, world_loss
 from .memory import KVCache, RecurrentState
 from .utils import check_floating, check_shape
+from .vision import ImageObsEncoder
 
 
 class VAGICore(nn.Module):
@@ -50,6 +51,11 @@ class VAGICore(nn.Module):
         self.world_logvar = (
             LogVarHead(cfg.hidden_size, cfg.obs_dim * cfg.world_model_horizon)
             if cfg.use_uncertainty and cfg.use_world_pred
+            else None
+        )
+        self.vision = (
+            ImageObsEncoder(cfg.vision_channels, cfg.obs_dim, hidden_size=cfg.vision_hidden)
+            if cfg.use_vision
             else None
         )
 
@@ -101,12 +107,14 @@ class VAGICore(nn.Module):
         targets: Optional[Dict[str, Any]] = None,
         return_loss: bool = False,
         return_hidden: bool = False,
+        image: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Forward pass for full sequences."""
         if input_ids.dtype != torch.long:
             raise TypeError("input_ids must be torch.long")
         check_shape(input_ids, (None, None), "input_ids")
 
+        obs = self._resolve_obs(obs, image)
         if obs is not None:
             check_shape(obs, (input_ids.shape[0], self.cfg.obs_dim), "obs")
             check_floating(obs, "obs")
@@ -213,15 +221,19 @@ class VAGICore(nn.Module):
     def step(
         self,
         input_ids: torch.Tensor,
-        obs: torch.Tensor,
+        obs: Optional[torch.Tensor],
         state: RecurrentState,
         task_ids: Optional[torch.Tensor] = None,
+        image: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Single-step inference with recurrent state update."""
         if state is None:
             raise ValueError("state is required for step()")
+        obs = self._resolve_obs(obs, image)
         if obs is None:
             raise ValueError("obs is required for step()")
+        check_shape(obs, (input_ids.shape[0], self.cfg.obs_dim), "obs")
+        check_floating(obs, "obs")
         x, h_last, h_act, mem_next, kv_next = self.backbone.forward_step(
             input_ids=input_ids,
             obs=obs,
@@ -271,12 +283,13 @@ class VAGICore(nn.Module):
     def act(
         self,
         input_ids: torch.Tensor,
-        obs: torch.Tensor,
+        obs: Optional[torch.Tensor],
         state: RecurrentState,
         task_ids: Optional[torch.Tensor] = None,
+        image: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Fast policy-only action selection."""
-        out = self.step(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids)
+        out = self.step(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids, image=image)
         action = torch.argmax(out["action_logits"], dim=-1)
         return {
             "action": action,
@@ -288,7 +301,7 @@ class VAGICore(nn.Module):
     def think_then_act(
         self,
         input_ids: torch.Tensor,
-        obs: torch.Tensor,
+        obs: Optional[torch.Tensor],
         state: RecurrentState,
         task_ids: Optional[torch.Tensor] = None,
         *,
@@ -300,6 +313,7 @@ class VAGICore(nn.Module):
         uncertainty_fallback: Optional[float] = None,
         error_stop_prob: Optional[float] = None,
         error_stop_ids: Optional[list[int]] = None,
+        image: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Plan then act using reflection + info gain with budget control."""
         budget = None
@@ -310,6 +324,7 @@ class VAGICore(nn.Module):
                 task_ids=task_ids,
                 state=state,
                 return_loss=False,
+                image=image,
             )
             budget = self._budget_from_logits(
                 base.get("budget_mode_logits"),
@@ -317,14 +332,14 @@ class VAGICore(nn.Module):
                 base.get("budget_candidate_logits"),
             )
             if budget["mode"] == "act":
-                act_out = self.act(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids)
+                act_out = self.act(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids, image=image)
                 act_out["budget"] = budget
                 return act_out
             horizon = budget["horizon"]
             num_candidates = budget["num_candidates"]
 
         if self.world is None:
-            return self.act(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids)
+            return self.act(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids, image=image)
 
         plan = self.plan_step(
             input_ids=input_ids,
@@ -339,6 +354,7 @@ class VAGICore(nn.Module):
             uncertainty_fallback=uncertainty_fallback,
             error_stop_prob=error_stop_prob,
             error_stop_ids=error_stop_ids,
+            image=image,
         )
         plan["budget"] = budget
         return plan
@@ -362,7 +378,7 @@ class VAGICore(nn.Module):
     def plan_step(
         self,
         input_ids: torch.Tensor,
-        obs: torch.Tensor,
+        obs: Optional[torch.Tensor],
         state: RecurrentState,
         task_ids: Optional[torch.Tensor] = None,
         num_candidates: int = 4,
@@ -376,6 +392,7 @@ class VAGICore(nn.Module):
         uncertainty_fallback: Optional[float] = None,
         error_stop_prob: Optional[float] = None,
         error_stop_ids: Optional[list[int]] = None,
+        image: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Plan a single action by rolling out the world model and scoring with value."""
         if num_candidates <= 0:
@@ -392,8 +409,11 @@ class VAGICore(nn.Module):
             raise ValueError("world model is required for plan_step")
         if state is None:
             raise ValueError("state is required for plan_step")
+        obs = self._resolve_obs(obs, image)
         if obs is None:
             raise ValueError("obs is required for plan_step")
+        check_shape(obs, (input_ids.shape[0], self.cfg.obs_dim), "obs")
+        check_floating(obs, "obs")
 
         base = self.forward(
             input_ids=input_ids,
@@ -401,6 +421,7 @@ class VAGICore(nn.Module):
             task_ids=task_ids,
             state=state,
             return_loss=False,
+            image=image,
         )
         action_logits = base["action_logits"]
         if error_stop_prob is not None and base.get("error_logits") is not None:
@@ -784,6 +805,19 @@ class VAGICore(nn.Module):
             values = [v[index : index + 1].clone() if v is not None else None for v in state.kv.values]
         kv = KVCache(keys=keys, values=values, max_len=state.kv.max_len)
         return RecurrentState(mem=mem, kv=kv, timestep=state.timestep)
+
+    def _resolve_obs(
+        self,
+        obs: Optional[torch.Tensor],
+        image: Optional[torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        if obs is not None:
+            return obs
+        if image is None:
+            return None
+        if self.vision is None:
+            raise ValueError("image provided but use_vision is disabled")
+        return self.vision(image)
 
     def _format_world_logvar(self, h_last: torch.Tensor) -> torch.Tensor:
         raw = self.world_logvar(h_last) if self.world_logvar is not None else None

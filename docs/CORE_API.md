@@ -7,11 +7,11 @@ This document defines the stable vAGI core interface and how we version changes.
 The following methods are considered stable and should remain backward compatible:
 
 - `VAGICore.init_state(batch_size, device=None, *, prefill_kv=False, kv_max_seq_len=None)`
-- `VAGICore.forward(input_ids, obs=None, task_ids=None, state=None, labels=None, targets=None, return_loss=False, return_hidden=False)`
-- `VAGICore.step(input_ids, obs, state, task_ids=None)`
-- `VAGICore.act(input_ids, obs, state, task_ids=None)`
-- `VAGICore.think_then_act(input_ids, obs, state, task_ids=None, horizon=None, num_candidates=None, strategy="cem", uncertainty_weight=1.0, info_gain_weight=0.0, uncertainty_fallback=None, error_stop_prob=None, error_stop_ids=None)`
-- `VAGICore.plan_step(input_ids, obs, state, task_ids=None, num_candidates=4, horizon=3, uncertainty_weight=1.0, info_gain_weight=0.0, strategy="cem", cem_iters=3, elite_frac=0.2, tree_branching=4, uncertainty_fallback=None, error_stop_prob=None, error_stop_ids=None)`
+- `VAGICore.forward(input_ids, obs=None, task_ids=None, state=None, labels=None, targets=None, return_loss=False, return_hidden=False, image=None)`
+- `VAGICore.step(input_ids, obs, state, task_ids=None, image=None)`
+- `VAGICore.act(input_ids, obs, state, task_ids=None, image=None)`
+- `VAGICore.think_then_act(input_ids, obs, state, task_ids=None, horizon=None, num_candidates=None, strategy="cem", uncertainty_weight=1.0, info_gain_weight=0.0, uncertainty_fallback=None, error_stop_prob=None, error_stop_ids=None, image=None)`
+- `VAGICore.plan_step(input_ids, obs, state, task_ids=None, num_candidates=4, horizon=3, uncertainty_weight=1.0, info_gain_weight=0.0, strategy="cem", cem_iters=3, elite_frac=0.2, tree_branching=4, uncertainty_fallback=None, error_stop_prob=None, error_stop_ids=None, image=None)`
 
 ### Output contracts
 
@@ -44,6 +44,12 @@ If `return_hidden=True`, `forward` includes:
 If `use_task_embedding=True`, the core accepts `task_ids` (`(B,)` long tensor) on
 `forward`, `step`, and `plan_step`. The task embedding is added to token embeddings
 as a conditioning signal.
+
+## Vision conditioning
+
+If `use_vision=True`, the core accepts `image` (`(B, C, H, W)` float tensor) on
+`forward`, `step`, `act`, `think_then_act`, and `plan_step`. When `obs` is not
+provided, `image` is encoded into an `obs_dim` vector via the vision encoder.
 
 ## Semantic versioning rules
 

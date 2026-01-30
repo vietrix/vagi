@@ -37,5 +37,6 @@ _enable_io_checkpoint()
 from .config import VAGIConfig
 from .memory import KVCache, RecurrentState
 from .model import VAGICore
+from .vision import ImageObsEncoder
 
-__all__ = ["VAGIConfig", "VAGICore", "RecurrentState", "KVCache"]
+__all__ = ["VAGIConfig", "VAGICore", "RecurrentState", "KVCache", "ImageObsEncoder"]

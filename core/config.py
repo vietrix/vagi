@@ -32,6 +32,9 @@ class VAGIConfig:
     use_budget_head: bool = False
     budget_max_horizon: int = 4
     budget_max_candidates: int = 8
+    use_vision: bool = False
+    vision_channels: int = 1
+    vision_hidden: int = 32
     use_world_pred: bool = False
     world_model_horizon: int = 1
     use_confidence: bool = False
@@ -88,6 +91,11 @@ class VAGIConfig:
             raise ValueError("budget_max_horizon must be > 0")
         if self.budget_max_candidates <= 0:
             raise ValueError("budget_max_candidates must be > 0")
+        if self.use_vision:
+            if self.vision_channels <= 0:
+                raise ValueError("vision_channels must be > 0")
+            if self.vision_hidden <= 0:
+                raise ValueError("vision_hidden must be > 0")
         if not (0.0 <= self.memory_decay <= 1.0):
             raise ValueError("memory_decay must be in [0, 1]")
         if self.memory_consolidate_every < 0:
