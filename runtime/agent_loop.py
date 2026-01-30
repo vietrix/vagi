@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -33,6 +34,10 @@ def run_episode(
             out = model.step(input_ids=input_ids, obs=obs.unsqueeze(0), state=state)
             action = int(torch.argmax(out["action_logits"], dim=-1).item())
             value = float(out["value"].item())
+            uncertainty = float(out["uncertainty"].mean().item()) if out.get("uncertainty") is not None else None
+            validity = None
+            if out.get("action_valid") is not None:
+                validity = float(out["action_valid"].squeeze(0)[action].item())
             next_obs, reward, done, info = env.step(action)
 
             if writer is not None:
@@ -43,6 +48,8 @@ def run_episode(
                         "action": action,
                         "reward": float(reward),
                         "value": value,
+                        "uncertainty": uncertainty,
+                        "validity": validity,
                     }
                 )
 

@@ -72,7 +72,7 @@ def _select_action(
     policy: str,
     mode: str,
     use_image: bool,
-) -> Tuple[int, torch.Tensor, Optional[torch.Tensor]]:
+) -> Tuple[int, torch.Tensor, Optional[torch.Tensor], Optional[float], Optional[float]]:
     input_ids = torch.zeros((1, 1), dtype=torch.long)
     obs_batch = None if use_image else obs.unsqueeze(0)
     image_batch = obs.unsqueeze(0) if use_image else None
@@ -80,7 +80,11 @@ def _select_action(
     if policy == "random":
         action = int(torch.randint(0, model.cfg.action_dim, (1,)).item())
         out = model.step(input_ids=input_ids, obs=obs_batch, image=image_batch, state=state)
-        return action, out["state"], out["value"]
+        uncertainty = float(out["uncertainty"].mean().item()) if out.get("uncertainty") is not None else None
+        validity = None
+        if out.get("action_valid") is not None:
+            validity = float(out["action_valid"].squeeze(0)[action].item())
+        return action, out["state"], out["value"], uncertainty, validity
 
     if mode == "think":
         plan = model.think_then_act(
@@ -93,11 +97,20 @@ def _select_action(
         outputs = plan.get("outputs")
         if outputs is None:
             outputs = model.step(input_ids=input_ids, obs=obs_batch, image=image_batch, state=state)
-        return action, outputs["state"], outputs["value"]
+        uncertainty = float(plan["uncertainty"].mean().item()) if plan.get("uncertainty") is not None else None
+        validity = None
+        if outputs.get("action_valid") is not None:
+            validity = float(outputs["action_valid"].squeeze(0)[action].item())
+        return action, outputs["state"], outputs["value"], uncertainty, validity
 
     out = model.act(input_ids=input_ids, obs=obs_batch, image=image_batch, state=state)
     action = int(out["action"].view(-1)[0].item())
-    return action, out["outputs"]["state"], out["outputs"]["value"]
+    outputs = out["outputs"]
+    uncertainty = float(out["uncertainty"].mean().item()) if out.get("uncertainty") is not None else None
+    validity = None
+    if outputs.get("action_valid") is not None:
+        validity = float(outputs["action_valid"].squeeze(0)[action].item())
+    return action, outputs["state"], outputs["value"], uncertainty, validity
 
 
 def _aggregate(records: Iterable[Dict[str, object]]) -> Dict[str, float]:
@@ -172,7 +185,7 @@ def collect_rollouts(
         steps = 0
         done = False
         while not done:
-            action, state, value = _select_action(
+            action, state, value, uncertainty, validity = _select_action(
                 model, obs, state, policy=policy, mode=mode, use_image=False
             )
             obs_next, reward, done, _info = env.step(action % env.action_dim)
@@ -189,7 +202,7 @@ def collect_rollouts(
                     "value": float(value.item()) if value is not None else None,
                     "task": "toy",
                     "success": bool(reward > 0.0),
-                    "info": {"env": "toy"},
+                    "info": {"env": "toy", "uncertainty": uncertainty, "validity": validity},
                 }
             )
             total_reward += float(reward)
@@ -222,7 +235,7 @@ def collect_rollouts(
         steps = 0
         done = False
         while not done:
-            action, state, value = _select_action(
+            action, state, value, uncertainty, validity = _select_action(
                 model, obs, state, policy=policy, mode=mode, use_image=True
             )
             obs_next, reward, done, _info = env.step(action % env.action_dim)
@@ -239,7 +252,7 @@ def collect_rollouts(
                     "value": float(value.item()) if value is not None else None,
                     "task": "ui",
                     "success": bool(reward > 0.0),
-                    "info": {"env": "ui"},
+                    "info": {"env": "ui", "uncertainty": uncertainty, "validity": validity},
                 }
             )
             total_reward += float(reward)
@@ -276,7 +289,7 @@ def collect_rollouts(
             done = False
             last_info: Dict[str, object] = {}
             while not done:
-                action_id, state, value = _select_action(
+                action_id, state, value, uncertainty, validity = _select_action(
                     model, obs, state, policy=policy, mode=mode, use_image=False
                 )
                 action_type = ACTION_TYPES[action_id % len(ACTION_TYPES)]
@@ -300,6 +313,8 @@ def collect_rollouts(
                             "env": "code",
                             "fail_count": int(info.get("fail_count", 0)),
                             "action": action_text,
+                            "uncertainty": uncertainty,
+                            "validity": validity,
                         },
                     }
                 )

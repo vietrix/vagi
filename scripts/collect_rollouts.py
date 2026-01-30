@@ -118,6 +118,10 @@ def collect_rollouts(
             next_obs = step_result.obs
             done = bool(step_result.done)
 
+            uncertainty = float(out["uncertainty"].mean().item()) if out.get("uncertainty") is not None else None
+            validity = None
+            if out.get("action_valid") is not None:
+                validity = float(out["action_valid"].squeeze(0)[action].item())
             record = {
                 "obs": _to_list(obs),
                 "action": int(action),
@@ -127,6 +131,7 @@ def collect_rollouts(
                 "obs_next": _to_list(next_obs),
                 "timestep": int(step_idx),
                 "seed": int(seed),
+                "info": {"uncertainty": uncertainty, "validity": validity},
             }
             records.append(record)
 

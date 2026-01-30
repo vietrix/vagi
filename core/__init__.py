@@ -35,6 +35,8 @@ def _enable_io_checkpoint() -> None:
 _enable_io_checkpoint()
 
 from .budget import BudgetController, BudgetDecision, CounterfactualRecord
+from .diagnostics import aggregate_metrics, compute_drop, should_rollback
+from .experience import ExperienceBuffer, ExperienceRecord, QualityGate
 from .config import VAGIConfig
 from .dyna import RolloutBatch, dyna_update, imagine_rollouts, mix_rollouts, policy_value_losses
 from .memory import KVCache, RecurrentState
@@ -51,6 +53,12 @@ __all__ = [
     "BudgetController",
     "BudgetDecision",
     "CounterfactualRecord",
+    "ExperienceBuffer",
+    "ExperienceRecord",
+    "QualityGate",
+    "aggregate_metrics",
+    "compute_drop",
+    "should_rollback",
     "compute_gae",
     "td_lambda_returns",
     "RolloutBatch",
