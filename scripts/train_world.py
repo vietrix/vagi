@@ -107,7 +107,7 @@ def train_world(
     if not samples:
         raise ValueError("Rollout dataset is empty.")
 
-    tokens_per_step = 1 + obs_tokens + (3 if use_special_tokens else 0)
+    tokens_per_step = 1 + obs_tokens + (1 if use_special_tokens else 0)
     if max_seq_len <= 0:
         max_seq_len = max(8, tokens_per_step * 8)
 

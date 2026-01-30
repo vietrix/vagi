@@ -98,7 +98,7 @@ def run_ablation(
 ) -> List[Dict[str, float]]:
     results: List[Dict[str, float]] = []
     for slots in (0, memory_slots):
-        tokens_per_step = 1 + obs_tokens + (3 if use_special_tokens else 0)
+        tokens_per_step = 1 + obs_tokens + (1 if use_special_tokens else 0)
         cfg = VAGIConfig(
             vocab_size=vocab_size,
             hidden_size=hidden_size,

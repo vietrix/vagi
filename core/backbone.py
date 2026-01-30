@@ -54,6 +54,8 @@ class FastMemory(nn.Module):
         self.write = nn.Linear(hidden_size, hidden_size)
         self.erase = nn.Linear(hidden_size, memory_slots)
         self.protect = nn.Linear(hidden_size, 1) if protect else None
+        self.consolidate_proj = nn.Linear(hidden_size, hidden_size) if consolidate_every > 0 else None
+        self.consolidate_gate = nn.Linear(hidden_size, 1) if consolidate_every > 0 else None
 
     def forward(self, mem: torch.Tensor, h_last: torch.Tensor, timestep: Optional[int] = None) -> torch.Tensor:
         check_shape(mem, (None, self.memory_slots, None), "mem")
@@ -83,8 +85,13 @@ class FastMemory(nn.Module):
         _ = (attn_weights.unsqueeze(-1) * v).sum(dim=1)
         if self.consolidate_every > 0 and timestep is not None:
             if (timestep + 1) % self.consolidate_every == 0:
+                if self.consolidate_proj is None or self.consolidate_gate is None:
+                    raise ValueError("consolidation modules not initialized")
                 summary = mem.mean(dim=1, keepdim=True)
-                mem[:, :1, :] = 0.5 * mem[:, :1, :] + 0.5 * summary
+                gate = torch.sigmoid(self.consolidate_gate(summary))
+                compressed = self.consolidate_proj(summary)
+                mem = mem * (1.0 - gate)
+                mem[:, :1, :] = mem[:, :1, :] + gate * compressed
         return mem
 
 

@@ -69,7 +69,7 @@ def collect_rollouts(
     set_seed(seed)
     device = torch.device("cpu")
 
-    tokens_per_step = 1 + obs_tokens + (3 if use_special_tokens else 0)
+    tokens_per_step = 1 + obs_tokens + (1 if use_special_tokens else 0)
     if max_seq_len <= 0:
         max_seq_len = max(8, tokens_per_step * episode_length)
 

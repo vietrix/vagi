@@ -35,8 +35,23 @@ def _enable_io_checkpoint() -> None:
 _enable_io_checkpoint()
 
 from .config import VAGIConfig
+from .dyna import RolloutBatch, dyna_update, imagine_rollouts, mix_rollouts, policy_value_losses
 from .memory import KVCache, RecurrentState
 from .model import VAGICore
+from .returns import compute_gae, td_lambda_returns
 from .vision import ImageObsEncoder
 
-__all__ = ["VAGIConfig", "VAGICore", "RecurrentState", "KVCache", "ImageObsEncoder"]
+__all__ = [
+    "VAGIConfig",
+    "VAGICore",
+    "RecurrentState",
+    "KVCache",
+    "ImageObsEncoder",
+    "compute_gae",
+    "td_lambda_returns",
+    "RolloutBatch",
+    "imagine_rollouts",
+    "mix_rollouts",
+    "policy_value_losses",
+    "dyna_update",
+]
