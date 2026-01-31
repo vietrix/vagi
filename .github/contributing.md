@@ -1,18 +1,69 @@
 # Contributing
 
-Thanks for helping improve vAGI-core!
+## Ownership
 
-## Quick checklist
-- Open an issue for significant changes.
-- Keep changes focused and tested.
-- Add or update tests where relevant.
-- Run `pytest` before submitting a PR.
+This project is owned and maintained by Vietrix.
+Contact: zyntherdev7878@gmail.com
+Domain: TBD
+
+Thanks for your interest in contributing to vAGI.
+
+## Code of Conduct
+
+By participating, you agree to abide by `CODE_OF_CONDUCT.md`.
+
+## Ways to contribute
+- Report bugs and regression issues
+- Propose features or improvements
+- Improve documentation and examples
+- Add tests and benchmarks
+
+## Development setup
+
+```bash
+python -m pip install -e .
+python -m pytest
+```
+
+## Project structure
+- `core/`: model backbone, heads, memory, losses
+- `scripts/`: training and evaluation helpers
+- `envs/`: toy environments
+- `runtime/`: agent loop runtime + logging
+- `docs/`: documentation
+- `tests/`: pytest suite
+
+## Style and quality
+- Follow existing naming and formatting conventions in the repo.
+- Prefer small, focused changes with clear intent.
+- Add or update tests when behavior changes.
+- Keep doc updates close to code changes.
+
+## Commit messages
+
+Use conventional prefixes:
+- feat:, fix:, refactor:, docs:, test:, chore:, ci:
 
 ## Pull requests
-1. Fork and create a topic branch.
-2. Make changes with clear, minimal commits.
-3. Ensure the test suite passes.
-4. Submit a PR and describe your changes.
 
-## Contributor License Agreement (CLA)
-By submitting a PR, you must agree to the terms in `CLA.md`. A bot will request an explicit reply in your PR.
+Checklist:
+- [ ] Changes are scoped and focused
+- [ ] Tests added or updated
+- [ ] Documentation updated if behavior changed
+- [ ] `python -m pytest` passes
+
+## Issues
+
+When filing issues, include:
+- Expected vs actual behavior
+- Steps to reproduce
+- Logs or stack traces
+- Environment (OS, Python, PyTorch)
+
+## Security
+
+Please do not report security issues via public issues. See `SECURITY.md`.
+
+## CLA
+
+The CLA in `CLA.md` is required. A bot will request confirmation.
