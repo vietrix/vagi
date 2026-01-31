@@ -7,7 +7,7 @@ from typing import Iterable, Optional
 
 import torch
 
-from .calibration import ConfidenceCalibrator
+from ..training.calibration import ConfidenceCalibrator
 
 
 @dataclass

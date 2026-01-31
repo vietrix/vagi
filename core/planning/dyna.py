@@ -8,10 +8,10 @@ from typing import Callable, Optional, Tuple
 import torch
 from torch.distributions import Categorical
 
-from .memory import KVCache, RecurrentState
-from .returns import compute_gae
-from .utils import check_floating
-from .model import VAGICore
+from ..base.memory import KVCache, RecurrentState
+from ..training.returns import compute_gae
+from ..base.utils import check_floating
+from ..base.model import VAGICore
 
 
 RewardFn = Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor | Tuple[torch.Tensor, torch.Tensor]]

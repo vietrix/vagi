@@ -1,0 +1,32 @@
+{
+  "parity": {
+    "torch_vs_onnx": [
+      true,
+      true,
+      true
+    ],
+    "torch_vs_quant": [
+      false,
+      false,
+      false
+    ]
+  },
+  "atol": 0.001,
+  "rtol": 0.001,
+  "latency_ms": {
+    "torch": 11.280050000641495,
+    "onnx": 0.5767000024206936,
+    "quantized": 0.9020800003781915
+  },
+  "peak_mem_mb": {
+    "torch": 0.005763053894042969,
+    "onnx": 0.0034236907958984375,
+    "quantized": 0.002166748046875
+  },
+  "paths": {
+    "onnx": "exports\\parity\\vagi.onnx",
+    "quantized": "exports\\parity\\vagi.int8.onnx",
+    "onnx_meta": "exports\\parity\\vagi.onnx.meta.json",
+    "quant_meta": "exports\\parity\\vagi.int8.onnx.meta.json"
+  }
+}

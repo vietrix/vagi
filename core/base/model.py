@@ -20,7 +20,7 @@ from .heads import (
     ValueHead,
     WorldHead,
 )
-from .losses import (
+from ..training.losses import (
     budget_loss,
     imagination_consistency_loss,
     language_loss,
@@ -32,7 +32,7 @@ from .losses import (
 )
 from .memory import KVCache, RecurrentState
 from .utils import check_floating, check_shape, sanitize_tensor, validate_seq_len, StageTimer
-from .vision import ImageObsEncoder
+from ..perception import ImageObsEncoder
 
 
 class VAGICore(nn.Module):
