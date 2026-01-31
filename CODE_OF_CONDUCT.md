@@ -45,11 +45,16 @@ response to any behavior they deem inappropriate, threatening, offensive, or har
 This Code of Conduct applies within all community spaces, and also applies when
 an individual is officially representing the community in public spaces.
 
-## Enforcement
+## Reporting
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders at zyntherdev7878@gmail.com. All complaints
-will be reviewed and investigated promptly and fairly.
+reported to the community leaders at zyntherdev7878@gmail.com. Reports should
+include:
+- A description of the behavior
+- Links or screenshots if relevant
+- Your contact information (optional)
+
+We will acknowledge receipt and review reports promptly and fairly.
 
 ## Enforcement Guidelines
 
@@ -71,6 +76,11 @@ the consequences for any action they deem in violation of this Code of Conduct:
 4. Permanent Ban
    - Impact: Demonstrating a pattern of violation of community standards.
    - Consequence: A permanent ban from any community interaction.
+
+## Confidentiality
+
+We will respect the confidentiality of reporters and will not share personal
+details beyond those who need to know to investigate the report.
 
 ## Attribution
 

@@ -8,7 +8,8 @@ Domain: TBD
 
 ## Supported Versions
 
-This project supports the latest version on the default branch.
+We support the latest code on the default branch. Older releases may not
+receive security fixes unless stated otherwise.
 
 ## Reporting a Vulnerability
 
@@ -22,4 +23,15 @@ Please include:
 - Affected versions or commits (if known)
 - Potential impact
 
-We will acknowledge receipt and provide a timeline for remediation as soon as possible.
+## Response Timeline
+
+We aim to:
+- Acknowledge reports within 72 hours
+- Provide a status update within 7 days
+- Release a fix or mitigation as soon as feasible
+
+## Coordinated Disclosure
+
+Please do not open public issues or pull requests for security problems before
+we have confirmed and addressed the vulnerability. We will coordinate disclosure
+with the reporter when possible.
