@@ -1,70 +1,101 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="260" viewBox="0 0 900 260">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380">
   <defs>
     <style>
-      .box { fill: #f5f5f5; stroke: #222; stroke-width: 1.5; }
-      .label { font-family: Arial, sans-serif; font-size: 14px; fill: #111; }
-      .small { font-family: Arial, sans-serif; font-size: 12px; fill: #111; }
-      .arrow { stroke: #333; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+      .title { font-family: Arial, sans-serif; font-size: 18px; fill: #0f172a; font-weight: 600; }
+      .label { font-family: Arial, sans-serif; font-size: 13px; fill: #0f172a; }
+      .small { font-family: Arial, sans-serif; font-size: 11px; fill: #0f172a; }
+      .box { fill: #f8fafc; stroke: #334155; stroke-width: 1.4; rx: 8; }
+      .group { fill: #e2e8f0; stroke: #334155; stroke-width: 1.2; rx: 10; }
+      .arrow { stroke: #334155; stroke-width: 1.4; fill: none; marker-end: url(#arrow); }
       .dash { stroke-dasharray: 6 4; }
     </style>
     <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-      <path d="M0,0 L8,4 L0,8 Z" fill="#333"/>
+      <path d="M0,0 L8,4 L0,8 Z" fill="#334155"/>
     </marker>
   </defs>
 
+  <text class="title" x="30" y="28">vAGI Core Data Flow</text>
+
   <!-- Inputs -->
-  <rect class="box" x="20" y="30" width="120" height="40" rx="6"/>
-  <text class="label" x="80" y="55" text-anchor="middle">tokens</text>
+  <rect class="box" x="30" y="70" width="140" height="44"/>
+  <text class="label" x="100" y="96" text-anchor="middle">tokens</text>
 
-  <rect class="box" x="20" y="100" width="120" height="40" rx="6"/>
-  <text class="label" x="80" y="125" text-anchor="middle">obs</text>
+  <rect class="box" x="30" y="130" width="140" height="44"/>
+  <text class="label" x="100" y="156" text-anchor="middle">obs (vector)</text>
 
-  <!-- Token embed -->
-  <rect class="box" x="170" y="30" width="140" height="40" rx="6"/>
-  <text class="label" x="240" y="55" text-anchor="middle">token_embed</text>
+  <rect class="box" x="30" y="190" width="140" height="44"/>
+  <text class="label" x="100" y="216" text-anchor="middle">image (optional)</text>
 
-  <!-- Obs tokenizer -->
-  <rect class="box" x="170" y="100" width="140" height="40" rx="6"/>
-  <text class="label" x="240" y="125" text-anchor="middle">obs_tokenizer</text>
+  <!-- Preproc -->
+  <rect class="box" x="210" y="70" width="150" height="44"/>
+  <text class="label" x="285" y="96" text-anchor="middle">token_embed</text>
 
-  <!-- Special tokens -->
-  <rect class="box" x="340" y="100" width="170" height="40" rx="6"/>
-  <text class="small" x="425" y="125" text-anchor="middle">special tokens &lt;OBS&gt;/&lt;ACT&gt;/&lt;VAL&gt;</text>
+  <rect class="box" x="210" y="130" width="150" height="44"/>
+  <text class="label" x="285" y="156" text-anchor="middle">obs_tokenizer</text>
 
-  <!-- Position + blocks -->
-  <rect class="box" x="340" y="30" width="170" height="40" rx="6"/>
-  <text class="label" x="425" y="55" text-anchor="middle">+pos</text>
+  <rect class="box" x="210" y="190" width="150" height="44"/>
+  <text class="label" x="285" y="216" text-anchor="middle">vision_encoder</text>
 
-  <rect class="box" x="540" y="30" width="200" height="110" rx="6"/>
-  <text class="label" x="640" y="65" text-anchor="middle">Transformer</text>
-  <text class="label" x="640" y="90" text-anchor="middle">blocks</text>
+  <rect class="box" x="390" y="130" width="200" height="44"/>
+  <text class="small" x="490" y="156" text-anchor="middle">special tokens &lt;OBS&gt; / &lt;ACT&gt; / &lt;VAL&gt;</text>
 
-  <!-- Hidden -->
-  <rect class="box" x="770" y="30" width="110" height="40" rx="6"/>
-  <text class="label" x="825" y="55" text-anchor="middle">hidden</text>
+  <rect class="box" x="390" y="70" width="200" height="44"/>
+  <text class="label" x="490" y="96" text-anchor="middle">concat + pos</text>
 
-  <!-- Outputs -->
-  <rect class="box" x="770" y="90" width="110" height="40" rx="6"/>
-  <text class="small" x="825" y="115" text-anchor="middle">text_logits</text>
+  <!-- Backbone group -->
+  <rect class="group" x="630" y="60" width="220" height="150"/>
+  <text class="label" x="740" y="86" text-anchor="middle">Transformer Backbone</text>
+  <text class="small" x="740" y="106" text-anchor="middle">N layers, causal self-attn</text>
+  <text class="small" x="740" y="126" text-anchor="middle">GQA / rotary (optional)</text>
 
-  <rect class="box" x="770" y="140" width="110" height="40" rx="6"/>
-  <text class="small" x="825" y="165" text-anchor="middle">action_logits</text>
+  <rect class="box" x="890" y="70" width="140" height="44"/>
+  <text class="label" x="960" y="96" text-anchor="middle">hidden states</text>
 
-  <rect class="box" x="770" y="190" width="110" height="40" rx="6"/>
-  <text class="small" x="825" y="215" text-anchor="middle">value/world/state</text>
+  <!-- Heads group -->
+  <rect class="group" x="890" y="130" width="280" height="200"/>
+  <text class="label" x="1030" y="156" text-anchor="middle">Heads</text>
+
+  <rect class="box" x="910" y="170" width="120" height="36"/>
+  <text class="small" x="970" y="193" text-anchor="middle">Language</text>
+
+  <rect class="box" x="1040" y="170" width="120" height="36"/>
+  <text class="small" x="1100" y="193" text-anchor="middle">Policy</text>
+
+  <rect class="box" x="910" y="215" width="120" height="36"/>
+  <text class="small" x="970" y="238" text-anchor="middle">Value</text>
+
+  <rect class="box" x="1040" y="215" width="120" height="36"/>
+  <text class="small" x="1100" y="238" text-anchor="middle">World (opt)</text>
+
+  <rect class="box" x="910" y="260" width="120" height="36"/>
+  <text class="small" x="970" y="283" text-anchor="middle">Uncertainty</text>
+
+  <rect class="box" x="1040" y="260" width="120" height="36"/>
+  <text class="small" x="1100" y="283" text-anchor="middle">Budget/Reflect</text>
+
+  <!-- State group -->
+  <rect class="group" x="630" y="230" width="220" height="110"/>
+  <text class="label" x="740" y="254" text-anchor="middle">RecurrentState</text>
+
+  <rect class="box" x="650" y="265" width="90" height="36"/>
+  <text class="small" x="695" y="288" text-anchor="middle">FastMemory</text>
+
+  <rect class="box" x="750" y="265" width="90" height="36"/>
+  <text class="small" x="795" y="288" text-anchor="middle">KV Cache</text>
 
   <!-- Arrows -->
-  <line class="arrow" x1="140" y1="50" x2="170" y2="50"/>
-  <line class="arrow" x1="140" y1="120" x2="170" y2="120"/>
-  <line class="arrow" x1="310" y1="50" x2="340" y2="50"/>
-  <line class="arrow" x1="310" y1="120" x2="340" y2="120"/>
-  <line class="arrow" x1="510" y1="50" x2="540" y2="50"/>
-  <line class="arrow" x1="740" y1="50" x2="770" y2="50"/>
+  <line class="arrow" x1="170" y1="92" x2="210" y2="92"/>
+  <line class="arrow" x1="170" y1="152" x2="210" y2="152"/>
+  <line class="arrow dash" x1="170" y1="212" x2="210" y2="212"/>
+  <line class="arrow" x1="360" y1="92" x2="390" y2="92"/>
+  <line class="arrow" x1="360" y1="152" x2="390" y2="152"/>
+  <line class="arrow dash" x1="360" y1="212" x2="390" y2="152"/>
+  <line class="arrow dash" x1="590" y1="152" x2="630" y2="110"/>
+  <line class="arrow" x1="590" y1="92" x2="630" y2="110"/>
+  <line class="arrow" x1="850" y1="92" x2="890" y2="92"/>
+  <line class="arrow" x1="960" y1="114" x2="960" y2="130"/>
 
-  <line class="arrow dash" x1="510" y1="120" x2="540" y2="80"/>
-  <line class="arrow dash" x1="510" y1="120" x2="540" y2="120"/>
-
-  <line class="arrow" x1="825" y1="70" x2="825" y2="90"/>
-  <line class="arrow" x1="825" y1="130" x2="825" y2="140"/>
-  <line class="arrow" x1="825" y1="180" x2="825" y2="190"/>
+  <!-- State connections -->
+  <line class="arrow dash" x1="740" y1="210" x2="740" y2="230"/>
+  <line class="arrow dash" x1="740" y1="230" x2="740" y2="210"/>
 </svg>
