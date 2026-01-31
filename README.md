@@ -13,36 +13,15 @@ predictions in a single forward pass.
 
 High level data flow:
 
-```
-tokens --> token_embed --+--> +pos --> Transformer blocks --> hidden states
-                         |
-obs ----> obs_tokenizer --+--> (optional) special tokens <OBS>/<ACT>/<VAL>
-
-Outputs:
-  text_logits  (LM head on sequence)
-  action_logits (policy head on h_act or h_last)
-  value        (value head on h_act or h_last)
-  world_pred   (world head on h_last, optional)
-  state        (memory + KV cache)
-```
+![vAGI data flow](docs/assets/architecture_flow.svg)
 
 Heads overview:
 
-```
-hidden states
-  |--> LanguageHead  --> text_logits
-  |--> PolicyHead    --> action_logits
-  |--> ValueHead     --> value
-  |--> WorldHead     --> world_pred (optional)
-```
+![vAGI heads](docs/assets/heads_overview.svg)
 
 Distillation + QAT pipeline:
 
-```
-Teacher -> logits/values/world/trace/uncertainty
-       \-> distill losses (KL + MSE)
-Student -> optional QAT phase (int8/bf16 simulation)
-```
+![Distillation pipeline](docs/assets/distill_qat_pipeline.svg)
 
 ## vAGI-lite default
 

@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="260" viewBox="0 0 900 260">
+  <defs>
+    <style>
+      .box { fill: #f5f5f5; stroke: #222; stroke-width: 1.5; }
+      .label { font-family: Arial, sans-serif; font-size: 14px; fill: #111; }
+      .small { font-family: Arial, sans-serif; font-size: 12px; fill: #111; }
+      .arrow { stroke: #333; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+      .dash { stroke-dasharray: 6 4; }
+    </style>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <!-- Inputs -->
+  <rect class="box" x="20" y="30" width="120" height="40" rx="6"/>
+  <text class="label" x="80" y="55" text-anchor="middle">tokens</text>
+
+  <rect class="box" x="20" y="100" width="120" height="40" rx="6"/>
+  <text class="label" x="80" y="125" text-anchor="middle">obs</text>
+
+  <!-- Token embed -->
+  <rect class="box" x="170" y="30" width="140" height="40" rx="6"/>
+  <text class="label" x="240" y="55" text-anchor="middle">token_embed</text>
+
+  <!-- Obs tokenizer -->
+  <rect class="box" x="170" y="100" width="140" height="40" rx="6"/>
+  <text class="label" x="240" y="125" text-anchor="middle">obs_tokenizer</text>
+
+  <!-- Special tokens -->
+  <rect class="box" x="340" y="100" width="170" height="40" rx="6"/>
+  <text class="small" x="425" y="125" text-anchor="middle">special tokens &lt;OBS&gt;/&lt;ACT&gt;/&lt;VAL&gt;</text>
+
+  <!-- Position + blocks -->
+  <rect class="box" x="340" y="30" width="170" height="40" rx="6"/>
+  <text class="label" x="425" y="55" text-anchor="middle">+pos</text>
+
+  <rect class="box" x="540" y="30" width="200" height="110" rx="6"/>
+  <text class="label" x="640" y="65" text-anchor="middle">Transformer</text>
+  <text class="label" x="640" y="90" text-anchor="middle">blocks</text>
+
+  <!-- Hidden -->
+  <rect class="box" x="770" y="30" width="110" height="40" rx="6"/>
+  <text class="label" x="825" y="55" text-anchor="middle">hidden</text>
+
+  <!-- Outputs -->
+  <rect class="box" x="770" y="90" width="110" height="40" rx="6"/>
+  <text class="small" x="825" y="115" text-anchor="middle">text_logits</text>
+
+  <rect class="box" x="770" y="140" width="110" height="40" rx="6"/>
+  <text class="small" x="825" y="165" text-anchor="middle">action_logits</text>
+
+  <rect class="box" x="770" y="190" width="110" height="40" rx="6"/>
+  <text class="small" x="825" y="215" text-anchor="middle">value/world/state</text>
+
+  <!-- Arrows -->
+  <line class="arrow" x1="140" y1="50" x2="170" y2="50"/>
+  <line class="arrow" x1="140" y1="120" x2="170" y2="120"/>
+  <line class="arrow" x1="310" y1="50" x2="340" y2="50"/>
+  <line class="arrow" x1="310" y1="120" x2="340" y2="120"/>
+  <line class="arrow" x1="510" y1="50" x2="540" y2="50"/>
+  <line class="arrow" x1="740" y1="50" x2="770" y2="50"/>
+
+  <line class="arrow dash" x1="510" y1="120" x2="540" y2="80"/>
+  <line class="arrow dash" x1="510" y1="120" x2="540" y2="120"/>
+
+  <line class="arrow" x1="825" y1="70" x2="825" y2="90"/>
+  <line class="arrow" x1="825" y1="130" x2="825" y2="140"/>
+  <line class="arrow" x1="825" y1="180" x2="825" y2="190"/>
+</svg>
