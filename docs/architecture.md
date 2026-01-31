@@ -35,3 +35,5 @@ This document describes the vAGI core model and its minimal training/runtime sta
 - Batch size can be tuned for throughput in scripts and benchmarks.
 - `scripts/bench_latency.py` supports a `--compile` flag for `torch.compile`.
 - `scripts/tune_inference.py` sweeps batch size and optional KV cache lengths.
+
+See `README.md` for diagrams.

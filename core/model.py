@@ -118,6 +118,7 @@ class VAGICore(nn.Module):
         targets: Optional[Dict[str, Any]] = None,
         return_loss: bool = False,
         return_hidden: bool = False,
+        return_features: bool = False,
         image: Optional[torch.Tensor] = None,
         timer: Optional[StageTimer] = None,
     ) -> Dict[str, Any]:
@@ -209,6 +210,13 @@ class VAGICore(nn.Module):
         }
         if return_hidden:
             outputs["hidden"] = h_last
+        if return_features:
+            outputs["features"] = {
+                "hidden": x,
+                "h_last": h_last,
+                "h_act": h_act,
+                "mem_next": mem_next,
+            }
 
         if return_loss:
             losses: Dict[str, torch.Tensor] = {}

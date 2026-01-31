@@ -1,69 +1,132 @@
 # vAGI
 
-vAGI is a compact, single-checkpoint causal transformer core with a recurrent state and multi-head outputs for text, actions, value, and optional world prediction.
+vAGI is a compact causal transformer core with recurrent state for agent-style models.
+It produces text logits, action logits (policy), value estimates, and optional world
+predictions in a single forward pass.
 
-## Quickstart
+## Ownership
+- Organization: Vietrix
+- Contact: zyntherdev7878@gmail.com
+- Domain: TBD
 
-```bash
-python -m pip install -e .
-pytest
+## Architecture (diagrams)
+
+High level data flow:
+
+```
+tokens --> token_embed --+--> +pos --> Transformer blocks --> hidden states
+                         |
+obs ----> obs_tokenizer --+--> (optional) special tokens <OBS>/<ACT>/<VAL>
+
+Outputs:
+  text_logits  (LM head on sequence)
+  action_logits (policy head on h_act or h_last)
+  value        (value head on h_act or h_last)
+  world_pred   (world head on h_last, optional)
+  state        (memory + KV cache)
 ```
 
-## Pseudo usage (illustrative, not executable)
+Heads overview:
 
-```text
-cfg = VAGIConfig(...)
-model = VAGICore(cfg)
-
-state = model.init_state(batch_size=B, device="cpu")
-
-out = model.step(input_ids=token_ids_t, obs=obs_t, state=state)
-text_logits = out["text_logits"]
-action_logits = out["action_logits"]
-value = out["value"]
-state = out["state"]
+```
+hidden states
+  |--> LanguageHead  --> text_logits
+  |--> PolicyHead    --> action_logits
+  |--> ValueHead     --> value
+  |--> WorldHead     --> world_pred (optional)
 ```
 
-## Reproducibility
+Distillation + QAT pipeline:
 
-```bash
-python -m scripts.run_all_benchmarks --deterministic
-python -m scripts.bench_cross_env --seeds 0,1,2 --episodes 5 --deterministic
-python -m scripts.summarize_results --run-dir results/run_<timestamp>
-python -m scripts.bench_latency --steps 50
-python -m scripts.tune_inference --batch-sizes 1,2,4 --kv-cache-len 16
-python -m scripts.ablate_fast_memory --deterministic
-python -m scripts.ablate_world_head --deterministic
-python -m scripts.ablate_kv_cache --deterministic
-python -m scripts.run_curriculum --pass-threshold 0.6 --deterministic
-python -m scripts.run_curriculum_multi_env --pass-threshold 0.6 --deterministic
-python -m scripts.collect_multi_env_rollouts --episodes-per-env 10 --episodes-per-task 2 --deterministic
-python -m scripts.self_improve_multi_env --iterations 5 --deterministic
+```
+Teacher -> logits/values/world/trace/uncertainty
+       \-> distill losses (KL + MSE)
+Student -> optional QAT phase (int8/bf16 simulation)
 ```
 
-## Baseline evaluation
+## vAGI-lite default
 
-```bash
-python -m scripts.eval_baselines --episodes 10 --tasks-dir envs/code_env/fixtures/benchmarks
+The current vAGI-lite preset is stored in `core/vagi_lite.json` and loaded via
+`load_vagi_lite_config()`.
+
+```json
+{
+  "vocab_size": 128,
+  "hidden_size": 32,
+  "n_layers": 1,
+  "n_heads": 2,
+  "n_kv_heads": 2,
+  "mlp_ratio": 2.0,
+  "max_seq_len": 16,
+  "obs_dim": 16,
+  "obs_tokens": 2,
+  "action_dim": 8,
+  "memory_slots": 4,
+  "dropout": 0.0,
+  "use_rotary": false,
+  "use_gqa": false,
+  "use_flash_attn": false,
+  "use_world_pred": true,
+  "use_special_tokens": true
+}
 ```
 
-Results are stored in `results/baselines.json`.
-Per-task summaries are stored in `results/baselines_per_task.json` and
-`results/baselines.csv`.
+## Results and benchmarks
 
-## AI review
+Latest sweep report: 2026-01-31 12:46:09
 
-See `docs/CI_CODEX.md` for triggering Codex reviews and autofix behavior.
+Benchmark setup:
+- Device: CPU
+- Environment: ToyEnv
+- Eval: 5 episodes, 16 steps
+- Latency: 50 steps, 5 warmup steps
 
-## Privacy
+Sweep table (params vs latency, pass_rate, memory):
 
-Logs and rollouts are scrubbed for common PII patterns by default. See
-`docs/PRIVACY.md` for opt-in, retention, and delete controls.
+| label | params | latency_ms | pass_rate | memory_mb | pareto | default |
+| --- | ---: | ---: | ---: | ---: | :---: | :---: |
+| h32_l1_h2 | 20477 | 1.615 | 0.062 | 0.078 | YES | YES |
+| h32_l1_h4 | 20477 | 1.810 | 0.062 | 0.078 |  |  |
+| h32_l2_h2 | 28893 | 2.815 | 0.188 | 0.110 |  |  |
+| h32_l2_h4 | 28893 | 3.171 | 0.188 | 0.110 |  |  |
+| h32_l3_h2 | 37309 | 3.887 | 0.062 | 0.142 |  |  |
+| h32_l3_h4 | 37309 | 3.638 | 0.062 | 0.142 |  |  |
+| h48_l1_h2 | 37613 | 1.773 | 0.188 | 0.143 |  |  |
+| h48_l1_h4 | 37613 | 1.771 | 0.188 | 0.143 |  |  |
+| h48_l2_h2 | 56381 | 2.607 | 0.062 | 0.215 |  |  |
+| h48_l2_h4 | 56381 | 3.001 | 0.062 | 0.215 |  |  |
+| h48_l3_h2 | 75149 | 3.866 | 0.062 | 0.287 |  |  |
+| h48_l3_h4 | 75149 | 3.432 | 0.062 | 0.287 |  |  |
+| h64_l1_h2 | 59357 | 1.793 | 0.188 | 0.226 |  |  |
+| h64_l1_h4 | 59357 | 1.750 | 0.188 | 0.226 | YES |  |
+| h64_l2_h2 | 92573 | 2.743 | 0.188 | 0.353 |  |  |
+| h64_l2_h4 | 92573 | 2.673 | 0.188 | 0.353 |  |  |
+| h64_l3_h2 | 125789 | 4.359 | 0.062 | 0.480 |  |  |
+| h64_l3_h4 | 125789 | 3.815 | 0.062 | 0.480 |  |  |
 
-## Export
+Notes:
+- This sweep used a small synthetic dataset and a short teacher warmup, so pass_rate
+  is intentionally low. Use a real teacher checkpoint for meaningful results.
 
-```bash
-python -m scripts.export_onnx --out exports/vagi.onnx
-python -m scripts.quantize_onnx --input exports/vagi.onnx --output exports/vagi.int8.onnx
-python -m scripts.check_export_parity --quant-mode int8 --runs 50
-```
+## Docs
+- Quickstart: `docs/QUICKSTART.md`
+- Install: `docs/install.md`
+- Use: `docs/use.md`
+- Train + distill: `docs/train.md`
+- Benchmarks: `docs/benchmarks.md`
+- Reproducibility: `docs/REPRODUCIBILITY.md`
+- Evaluation: `docs/EVALUATION.md`
+- Export: `docs/EXPORT.md`
+- Privacy: `docs/PRIVACY.md`
+- AI review: `docs/CI_CODEX.md`
+- Config: `docs/config.md`
+- Architecture: `docs/architecture.md`
+- API: `docs/api.md`
+- Data: `docs/data.md`
+- Model card: `docs/MODEL_CARD.md`
+
+## Policies
+- Code of Conduct: `CODE_OF_CONDUCT.md`
+- Security: `SECURITY.md`
+- Contributing: `CONTRIBUTING.md`
+- License: `LICENSE`

@@ -41,6 +41,7 @@ from .config import VAGIConfig
 from .dyna import RolloutBatch, dyna_update, imagine_rollouts, mix_rollouts, policy_value_losses
 from .memory import KVCache, RecurrentState
 from .model import VAGICore
+from .presets import load_vagi_lite_config, save_vagi_lite_config
 from .returns import compute_gae, td_lambda_returns
 from .vision import ImageObsEncoder
 
@@ -66,4 +67,6 @@ __all__ = [
     "mix_rollouts",
     "policy_value_losses",
     "dyna_update",
+    "load_vagi_lite_config",
+    "save_vagi_lite_config",
 ]

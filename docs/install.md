@@ -12,7 +12,7 @@ python -m pip install -e .
 
 ## Verify
 ```bash
-pytest
+python -m pytest
 ```
 
 ## Scripts

@@ -1,0 +1,19 @@
+{
+  "vocab_size": 128,
+  "hidden_size": 32,
+  "n_layers": 1,
+  "n_heads": 2,
+  "n_kv_heads": 2,
+  "mlp_ratio": 2.0,
+  "max_seq_len": 16,
+  "obs_dim": 16,
+  "obs_tokens": 2,
+  "action_dim": 8,
+  "memory_slots": 4,
+  "dropout": 0.0,
+  "use_rotary": false,
+  "use_gqa": false,
+  "use_flash_attn": false,
+  "use_world_pred": true,
+  "use_special_tokens": true
+}
