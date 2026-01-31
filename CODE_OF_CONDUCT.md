@@ -1,5 +1,11 @@
 # Code of Conduct
 
+## Ownership
+
+This project is owned and maintained by Vietrix.
+Contact: zyntherdev7878@gmail.com
+Domain: TBD
+
 ## Our Pledge
 
 We as members, contributors, and leaders pledge to make participation in our

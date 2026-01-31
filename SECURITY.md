@@ -1,5 +1,11 @@
 # Security Policy
 
+## Ownership
+
+This project is owned and maintained by Vietrix.
+Contact: zyntherdev7878@gmail.com
+Domain: TBD
+
 ## Supported Versions
 
 This project supports the latest version on the default branch.

@@ -1,5 +1,11 @@
 # Contributing
 
+## Ownership
+
+This project is owned and maintained by Vietrix.
+Contact: zyntherdev7878@gmail.com
+Domain: TBD
+
 Thanks for your interest in contributing to vAGI.
 
 ## Code of Conduct
