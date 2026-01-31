@@ -1,71 +1,57 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300">
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="360" viewBox="0 0 980 360">
   <defs>
-    <style>
-      .title { font-family: Arial, sans-serif; font-size: 18px; fill: #0f172a; font-weight: 600; }
-      .label { font-family: Arial, sans-serif; font-size: 13px; fill: #0f172a; }
-      .small { font-family: Arial, sans-serif; font-size: 11px; fill: #0f172a; }
-      .box { fill: #f8fafc; stroke: #334155; stroke-width: 1.4; rx: 8; }
-      .group { fill: #e2e8f0; stroke: #334155; stroke-width: 1.2; rx: 10; }
-      .arrow { stroke: #334155; stroke-width: 1.4; fill: none; marker-end: url(#arrow); }
-      .dash { stroke-dasharray: 6 4; }
-    </style>
-    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-      <path d="M0,0 L8,4 L0,8 Z" fill="#334155"/>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#334155" />
     </marker>
   </defs>
 
-  <text class="title" x="30" y="28">Output Heads Overview</text>
+  <rect x="20" y="30" width="200" height="50" fill="#f1f5f9" stroke="#334155" />
+  <text x="120" y="60" font-family="Arial" font-size="14" text-anchor="middle">Hidden States</text>
 
-  <rect class="box" x="40" y="110" width="170" height="60"/>
-  <text class="label" x="125" y="142" text-anchor="middle">hidden states</text>
+  <rect x="260" y="40" width="150" height="50" fill="#f8fafc" stroke="#334155" />
+  <text x="335" y="70" font-family="Arial" font-size="12" text-anchor="middle">LanguageHead</text>
 
-  <rect class="group" x="260" y="60" width="300" height="180"/>
-  <text class="label" x="410" y="86" text-anchor="middle">Core Heads</text>
+  <rect x="260" y="110" width="150" height="50" fill="#f8fafc" stroke="#334155" />
+  <text x="335" y="140" font-family="Arial" font-size="12" text-anchor="middle">PolicyHead</text>
 
-  <rect class="box" x="280" y="100" width="120" height="40"/>
-  <text class="small" x="340" y="125" text-anchor="middle">LanguageHead</text>
+  <rect x="260" y="180" width="150" height="50" fill="#f8fafc" stroke="#334155" />
+  <text x="335" y="210" font-family="Arial" font-size="12" text-anchor="middle">ValueHead</text>
 
-  <rect class="box" x="420" y="100" width="120" height="40"/>
-  <text class="small" x="480" y="125" text-anchor="middle">PolicyHead</text>
+  <rect x="260" y="250" width="150" height="50" fill="#f8fafc" stroke="#334155" />
+  <text x="335" y="280" font-family="Arial" font-size="12" text-anchor="middle">WorldHead</text>
 
-  <rect class="box" x="280" y="150" width="120" height="40"/>
-  <text class="small" x="340" y="175" text-anchor="middle">ValueHead</text>
+  <rect x="460" y="40" width="150" height="50" fill="#e0f2fe" stroke="#0369a1" />
+  <text x="535" y="70" font-family="Arial" font-size="12" text-anchor="middle">text_logits</text>
 
-  <rect class="box" x="420" y="150" width="120" height="40"/>
-  <text class="small" x="480" y="175" text-anchor="middle">WorldHead</text>
+  <rect x="460" y="110" width="150" height="50" fill="#e0f2fe" stroke="#0369a1" />
+  <text x="535" y="140" font-family="Arial" font-size="12" text-anchor="middle">action_logits</text>
 
-  <rect class="group" x="600" y="60" width="260" height="180"/>
-  <text class="label" x="730" y="86" text-anchor="middle">Optional Heads</text>
+  <rect x="460" y="180" width="150" height="50" fill="#e0f2fe" stroke="#0369a1" />
+  <text x="535" y="210" font-family="Arial" font-size="12" text-anchor="middle">value</text>
 
-  <rect class="box" x="620" y="100" width="100" height="40"/>
-  <text class="small" x="670" y="125" text-anchor="middle">ActionValid</text>
+  <rect x="460" y="250" width="150" height="50" fill="#e0f2fe" stroke="#0369a1" />
+  <text x="535" y="280" font-family="Arial" font-size="12" text-anchor="middle">world_pred</text>
 
-  <rect class="box" x="740" y="100" width="100" height="40"/>
-  <text class="small" x="790" y="125" text-anchor="middle">LogVar</text>
+  <rect x="660" y="90" width="160" height="50" fill="#fef9c3" stroke="#92400e" />
+  <text x="740" y="120" font-family="Arial" font-size="12" text-anchor="middle">Uncertainty</text>
 
-  <rect class="box" x="620" y="150" width="100" height="40"/>
-  <text class="small" x="670" y="175" text-anchor="middle">ErrorType</text>
+  <rect x="660" y="160" width="160" height="50" fill="#fef9c3" stroke="#92400e" />
+  <text x="740" y="190" font-family="Arial" font-size="12" text-anchor="middle">Budget/Reflect</text>
 
-  <rect class="box" x="740" y="150" width="100" height="40"/>
-  <text class="small" x="790" y="175" text-anchor="middle">Budget</text>
+  <rect x="830" y="120" width="130" height="50" fill="#dcfce7" stroke="#166534" />
+  <text x="895" y="150" font-family="Arial" font-size="12" text-anchor="middle">Outputs</text>
 
-  <rect class="group" x="900" y="60" width="260" height="180"/>
-  <text class="label" x="1030" y="86" text-anchor="middle">Outputs</text>
+  <line x1="220" y1="55" x2="260" y2="65" stroke="#334155" marker-end="url(#arrow)" />
+  <line x1="220" y1="55" x2="260" y2="135" stroke="#334155" marker-end="url(#arrow)" />
+  <line x1="220" y1="55" x2="260" y2="205" stroke="#334155" marker-end="url(#arrow)" />
+  <line x1="220" y1="55" x2="260" y2="275" stroke="#334155" marker-end="url(#arrow)" />
 
-  <rect class="box" x="920" y="100" width="220" height="40"/>
-  <text class="small" x="1030" y="125" text-anchor="middle">text_logits / action_logits</text>
+  <line x1="410" y1="65" x2="460" y2="65" stroke="#334155" marker-end="url(#arrow)" />
+  <line x1="410" y1="135" x2="460" y2="135" stroke="#334155" marker-end="url(#arrow)" />
+  <line x1="410" y1="205" x2="460" y2="205" stroke="#334155" marker-end="url(#arrow)" />
+  <line x1="410" y1="275" x2="460" y2="275" stroke="#334155" marker-end="url(#arrow)" />
 
-  <rect class="box" x="920" y="150" width="220" height="40"/>
-  <text class="small" x="1030" y="175" text-anchor="middle">value / world_pred</text>
-
-  <rect class="box" x="920" y="200" width="220" height="40"/>
-  <text class="small" x="1030" y="225" text-anchor="middle">uncertainty / budget / info</text>
-
-  <!-- Arrows -->
-  <line class="arrow" x1="210" y1="140" x2="260" y2="140"/>
-  <line class="arrow" x1="560" y1="120" x2="600" y2="120"/>
-  <line class="arrow" x1="560" y1="170" x2="600" y2="170"/>
-  <line class="arrow" x1="860" y1="120" x2="900" y2="120"/>
-  <line class="arrow" x1="860" y1="170" x2="900" y2="170"/>
-  <line class="arrow dash" x1="860" y1="190" x2="900" y2="220"/>
+  <line x1="610" y1="135" x2="660" y2="115" stroke="#94a3b8" marker-end="url(#arrow)" />
+  <line x1="610" y1="205" x2="660" y2="185" stroke="#94a3b8" marker-end="url(#arrow)" />
+  <line x1="820" y1="145" x2="830" y2="145" stroke="#334155" marker-end="url(#arrow)" />
 </svg>
