@@ -4,11 +4,6 @@ vAGI is a compact causal transformer core with recurrent state for agent-style m
 It produces text logits, action logits (policy), value estimates, and optional world
 predictions in a single forward pass.
 
-## Ownership
-- Organization: Vietrix
-- Contact: zyntherdev7878@gmail.com
-- Domain: TBD
-
 ## Architecture (diagrams)
 
 High level data flow:
