@@ -343,6 +343,10 @@ class ToolUseController(nn.Module):
         """Decide whether to use tool and which one."""
         use_tool_prob = self.should_use_tool(context)
         
+        # Handle batched input - take first item if batch
+        if use_tool_prob.numel() > 1:
+            use_tool_prob = use_tool_prob[0]
+        
         should_use = use_tool_prob.item() > threshold
         
         if not should_use:
