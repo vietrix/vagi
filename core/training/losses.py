@@ -198,3 +198,170 @@ def budget_loss(
     if candidate_logits is not None and "budget_candidates" in targets:
         losses["budget_candidates"] = F.cross_entropy(candidate_logits, targets["budget_candidates"])
     return losses
+
+
+def scene_graph_loss(
+    pred_objects: torch.Tensor,
+    pred_relations: torch.Tensor,
+    target_objects: Optional[torch.Tensor] = None,
+    target_relations: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Loss for scene graph prediction.
+    
+    Args:
+        pred_objects: Predicted object embeddings (batch, num_objects, object_dim)
+        pred_relations: Predicted relations (batch, num_objects, num_objects, relation_dim)
+        target_objects: Target object embeddings (optional)
+        target_relations: Target relations (optional)
+    
+    Returns:
+        Scene graph reconstruction loss
+    """
+    if target_objects is None or target_relations is None:
+        return torch.tensor(0.0, device=pred_objects.device)
+    
+    obj_loss = F.mse_loss(pred_objects, target_objects)
+    rel_loss = F.mse_loss(pred_relations, target_relations)
+    
+    return obj_loss + 0.5 * rel_loss
+
+
+def program_synthesis_loss(
+    program_output: torch.Tensor,
+    target_output: torch.Tensor,
+    program_logits: Optional[torch.Tensor] = None,
+    target_program: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Loss for program synthesis.
+    
+    Args:
+        program_output: Output of synthesized program
+        target_output: Expected output
+        program_logits: Logits for program structure (optional)
+        target_program: Target program structure (optional)
+    
+    Returns:
+        Program synthesis loss
+    """
+    output_loss = F.mse_loss(program_output, target_output)
+    
+    if program_logits is not None and target_program is not None:
+        structure_loss = F.cross_entropy(
+            program_logits.reshape(-1, program_logits.size(-1)),
+            target_program.reshape(-1)
+        )
+        return output_loss + 0.1 * structure_loss
+    
+    return output_loss
+
+
+def grounded_language_loss(
+    grounded_output: Dict[str, torch.Tensor],
+    targets: Dict[str, torch.Tensor],
+) -> torch.Tensor:
+    """Loss for grounded language understanding.
+    
+    Args:
+        grounded_output: Dictionary with model outputs
+        targets: Dictionary with target values
+    
+    Returns:
+        Total grounded language loss
+    """
+    total_loss = torch.tensor(0.0)
+    device = next(iter(grounded_output.values())).device if grounded_output else None
+    
+    if device is None:
+        return total_loss
+    
+    total_loss = total_loss.to(device)
+    
+    # VQA loss
+    if "vqa_answer" in grounded_output and "vqa_target" in targets:
+        vqa_loss = F.cross_entropy(
+            grounded_output["vqa_answer"],
+            targets["vqa_target"]
+        )
+        total_loss = total_loss + vqa_loss
+    
+    # Vision-language grounding loss
+    if "attention_weights" in grounded_output and "grounding_target" in targets:
+        grounding_loss = F.mse_loss(
+            grounded_output["attention_weights"],
+            targets["grounding_target"]
+        )
+        total_loss = total_loss + 0.5 * grounding_loss
+    
+    # Instruction following loss
+    if "instruction_embedding" in grounded_output and "instruction_target" in targets:
+        instruction_loss = F.mse_loss(
+            grounded_output["instruction_embedding"],
+            targets["instruction_target"]
+        )
+        total_loss = total_loss + 0.3 * instruction_loss
+    
+    return total_loss
+
+
+def intrinsic_reward_loss(
+    intrinsic_rewards: Dict[str, torch.Tensor],
+    state: torch.Tensor,
+    next_state: torch.Tensor,
+) -> torch.Tensor:
+    """Loss for intrinsic motivation system (regularization).
+    
+    Args:
+        intrinsic_rewards: Dictionary with intrinsic reward components
+        state: Current state
+        next_state: Next state
+    
+    Returns:
+        Intrinsic reward regularization loss
+    """
+    total_loss = torch.tensor(0.0, device=state.device)
+    
+    # Curiosity regularization (prevent collapse)
+    if "curiosity" in intrinsic_rewards:
+        curiosity = intrinsic_rewards["curiosity"]
+        # Encourage exploration but prevent infinite growth
+        reg_loss = F.relu(curiosity.mean() - 5.0)  # Cap at 5.0
+        total_loss = total_loss + 0.01 * reg_loss
+    
+    # Novelty regularization
+    if "novelty" in intrinsic_rewards:
+        novelty = intrinsic_rewards["novelty"]
+        # Encourage novelty detection but prevent always-novel
+        reg_loss = F.relu(novelty.mean() - 3.0)  # Cap at 3.0
+        total_loss = total_loss + 0.01 * reg_loss
+    
+    return total_loss
+
+
+def meta_cognition_loss(
+    metacog_output: Dict[str, torch.Tensor],
+    actual_performance: torch.Tensor,
+) -> torch.Tensor:
+    """Loss for meta-cognition system (capability prediction).
+    
+    Args:
+        metacog_output: Meta-cognition outputs
+        actual_performance: Actual task performance (0-1)
+    
+    Returns:
+        Meta-cognition calibration loss
+    """
+    if "capability_prediction" not in metacog_output:
+        return torch.tensor(0.0, device=actual_performance.device)
+    
+    predicted_capability = metacog_output["capability_prediction"]
+    
+    # Calibration loss (predict actual performance)
+    calibration_loss = F.mse_loss(predicted_capability, actual_performance)
+    
+    # Confidence penalty (prevent overconfidence)
+    if "confidence" in metacog_output:
+        confidence = metacog_output["confidence"]
+        overconfidence_penalty = F.relu(confidence - 0.95).mean()
+        calibration_loss = calibration_loss + 0.1 * overconfidence_penalty
+    
+    return calibration_loss

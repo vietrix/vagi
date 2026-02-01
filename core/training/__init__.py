@@ -10,6 +10,11 @@ from .losses import (
     total_loss,
     value_loss,
     world_loss,
+    scene_graph_loss,
+    program_synthesis_loss,
+    grounded_language_loss,
+    intrinsic_reward_loss,
+    meta_cognition_loss,
 )
 from .returns import compute_gae, td_lambda_returns
 from .calibration import ConfidenceCalibrator
@@ -43,4 +48,9 @@ __all__ = [
     "ContinuousLearningConfig",
     "SelfSupervisedLabeler",
     "ExperienceReplay",
+    "scene_graph_loss",
+    "program_synthesis_loss",
+    "grounded_language_loss",
+    "intrinsic_reward_loss",
+    "meta_cognition_loss",
 ]
