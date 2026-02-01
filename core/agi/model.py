@@ -146,6 +146,89 @@ class AGIModel(nn.Module):
         self.augmented_value_head = nn.Linear(cfg.hidden_size, 1)
         self.vision_fusion_weight = nn.Parameter(torch.tensor(0.5))
         self._tokenizer: Optional[BytePairTokenizer] = None
+        
+        # Setup extended AGI modules
+        self.setup_extended_modules()
+
+    def setup_extended_modules(self) -> None:
+        """Initialize all extended AGI modules."""
+        cfg = self.cfg
+        
+        # Continuous Learning Setup
+        if cfg.use_continuous_learning:
+            from ..training import ContinuousLearningConfig
+            cl_config = ContinuousLearningConfig(
+                buffer_size=cfg.continuous_learning_buffer_size,
+                batch_size=cfg.continuous_learning_batch_size,
+                alpha=cfg.continuous_learning_alpha,
+                beta=cfg.continuous_learning_beta,
+                update_frequency=cfg.continuous_learning_update_freq
+            )
+            self.continuous_learning_config = cl_config
+            self._continuous_learner = None  # Will be set when optimizer is available
+        
+        # Scene Graphs
+        if cfg.use_scene_graphs:
+            from ..perception import SceneGraphBuilder, GroundedWorldModel
+            self.scene_graph_builder = SceneGraphBuilder(
+                obs_dim=cfg.obs_dim,
+                num_slots=cfg.num_object_slots,
+                object_dim=cfg.object_dim,
+                hidden_size=cfg.hidden_size,
+                num_iterations=cfg.scene_graph_iterations
+            )
+            if cfg.use_world_pred:
+                self.grounded_world_model = GroundedWorldModel(
+                    scene_graph_dim=cfg.object_dim * cfg.num_object_slots,
+                    action_dim=cfg.action_dim,
+                    hidden_size=cfg.hidden_size,
+                    horizon=cfg.world_model_horizon
+                )
+        
+        # Intrinsic Motivation 
+        if cfg.use_intrinsic_motivation:
+            from ..planning import IntrinsicMotivationSystem, IntrinsicRewardConfig
+            intrinsic_config = IntrinsicRewardConfig(
+                curiosity_weight=cfg.curiosity_weight,
+                novelty_weight=cfg.novelty_weight,
+                empowerment_weight=cfg.empowerment_weight
+            )
+            self.intrinsic_motivation = IntrinsicMotivationSystem(
+                state_dim=cfg.obs_dim,
+                action_dim=cfg.action_dim,
+                hidden_size=cfg.intrinsic_hidden_size,
+                config=intrinsic_config,
+                novelty_buffer_size=cfg.novelty_buffer_size
+            )
+        
+        # Program Synthesis
+        if cfg.use_program_synthesis:
+            from ..reasoning import ProgramSynthesizer, DomainSpecificLanguage
+            self.dsl = DomainSpecificLanguage(num_primitives=cfg.num_primitives)
+            self.program_synthesizer = ProgramSynthesizer(
+                dsl=self.dsl,
+                hidden_size=cfg.program_hidden_size,
+                max_length=cfg.max_program_length,
+                num_samples=cfg.num_program_samples
+            )
+        
+        # Grounded Language
+        if cfg.use_grounded_language:
+            from ..nlp import GroundedLanguageModel
+            self.grounded_language = GroundedLanguageModel(
+                text_dim=cfg.hidden_size,
+                vision_dim=cfg.vision_embed_dim if cfg.use_vision else cfg.hidden_size,
+                hidden_size=cfg.grounded_lang_hidden_size,
+                vocab_size=cfg.vocab_size
+            )
+        
+        # Meta-Cognition
+        if cfg.use_metacognition:
+            from ..learning import MetaCognition
+            self.metacognition = MetaCognition(
+                hidden_size=cfg.metacog_hidden_size,
+                task_embedding_dim=cfg.metacog_task_embedding_dim
+            )
 
     def _get_core_config(self, cfg: AGIConfig):
         """Extract VAGICore config from AGI config."""
@@ -349,6 +432,81 @@ class AGIModel(nn.Module):
                 
                 reasoning_contribution = self.reasoning_projection(relational_pooled)
                 context_additions.append(reasoning_contribution)
+        
+        # === NEW AGI MODULES IN FORWARD PASS ===
+        
+        # Scene Graph Parsing
+        scene_graph = None
+        if self.cfg.use_scene_graphs and hasattr(self, "scene_graph_builder") and obs is not None:
+            scene_graph = self.scene_graph_builder(obs)
+            outputs["scene_graph"] = scene_graph
+            
+            # Add scene graph embedding to context
+            if "object_embeddings" in scene_graph:
+                scene_embedding = scene_graph["object_embeddings"].flatten(start_dim=1)
+                # Project to hidden size if needed
+                if scene_embedding.size(-1) != hidden_pooled.size(-1):
+                    if not hasattr(self, "scene_projection"):
+                        self.scene_projection = nn.Linear(
+                            scene_embedding.size(-1),
+                            hidden_pooled.size(-1)
+                        ).to(hidden_pooled.device)
+                    scene_contribution = self.scene_projection(scene_embedding)
+                else:
+                    scene_contribution = scene_embedding
+                context_additions.append(scene_contribution)
+        
+        # Program Synthesis Context
+        if self.cfg.use_program_synthesis and hasattr(self, "program_synthesizer"):
+            if "reasoning" in outputs and "relational" in outputs["reasoning"]:
+                # Store program context for specialized tasks
+                outputs["program_context"] = outputs["reasoning"]["relational"]
+        
+        # Grounded Language Understanding
+        if self.cfg.use_grounded_language and hasattr(self, "grounded_language"):
+            if image is not None and hasattr(self, "vision_encoder"):
+                # Vision-language grounding
+                vision_features = outputs.get("vision_features")
+                if vision_features is not None:
+                    grounded_output = self.grounded_language(
+                        text_features=hidden_pooled,
+                        vision_features=vision_features,
+                        mode=mode
+                    )
+                    outputs["grounded_language"] = grounded_output
+                    
+                    # Add grounded understanding to context
+                    if "grounded_hidden" in grounded_output:
+                        context_additions.append(grounded_output["grounded_hidden"])
+        
+        # Meta-Cognition (inference only to avoid training overhead)
+        if self.cfg.use_metacognition and hasattr(self, "metacognition") and mode == "inference":
+            # Task embedding (simplified - use task_ids if available)
+            if task_ids is not None:
+                task_emb = torch.randn(
+                    batch_size,
+                    self.cfg.metacog_task_embedding_dim,
+                    device=device
+                )
+            else:
+                task_emb = torch.zeros(
+                    batch_size,
+                    self.cfg.metacog_task_embedding_dim,
+                    device=device
+                )
+            
+            # Thought sequence (use hidden states)
+            thought_sequence = [hidden_pooled]
+            
+            # Meta-cognitive analysis
+            metacog_output = self.metacognition(
+                task_embedding=task_emb,
+                current_thoughts=thought_sequence,
+                hidden_state=hidden_pooled
+            )
+            outputs["metacognition"] = metacog_output
+        
+        # === END NEW MODULES ===
         
         if context_additions:
             augmented_hidden = hidden_pooled + sum(context_additions)

@@ -104,6 +104,50 @@ class AGIConfig:
     use_transfer_learning: bool = True
     shared_transfer_dim: int = 512
     
+    # Continuous Learning
+    use_continuous_learning: bool = True
+    continuous_learning_buffer_size: int = 100000
+    continuous_learning_batch_size: int = 32
+    continuous_learning_update_freq: int = 10
+    continuous_learning_alpha: float = 0.6  # Priority exponent
+    continuous_learning_beta: float = 0.4  # Importance sampling
+    
+    # Object-Centric Perception (Scene Graphs)
+    use_scene_graphs: bool = True
+    num_object_slots: int = 10
+    object_dim: int = 128
+    scene_graph_iterations: int = 3
+    
+    # Intrinsic Motivation
+    use_intrinsic_motivation: bool = True
+    intrinsic_reward_weight: float = 0.1
+    curiosity_weight: float = 0.5
+    novelty_weight: float = 0.3
+    empowerment_weight: float = 0.2
+    intrinsic_hidden_size: int = 256
+    novelty_buffer_size: int = 1000
+    
+    # Program Synthesis
+    use_program_synthesis: bool = True
+    num_primitives: int = 20
+    max_program_length: int = 10
+    program_hidden_size: int = 256
+    num_program_samples: int = 5
+    
+    # Grounded Language Understanding
+    use_grounded_language: bool = True
+    use_vqa: bool = True
+    use_instruction_following: bool = True
+    grounded_lang_hidden_size: int = 512
+    max_instruction_length: int = 50
+    
+    # Meta-Cognition
+    use_metacognition: bool = True
+    metacog_hidden_size: int = 256
+    metacog_task_embedding_dim: int = 128
+    metacog_capability_dim: int = 64
+    metacog_num_capability_types: int = 20
+    
     def __post_init__(self) -> None:
         """Validate configuration."""
         if self.use_confidence and not self.use_uncertainty:
