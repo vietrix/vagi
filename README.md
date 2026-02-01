@@ -79,6 +79,9 @@ pytest tests/test_agi_full_integration.py::test_scene_graph_integration -v
 
 # Quick test
 python test_simple.py
+
+# Verify AGI Capabilities (The "Turing Test")
+python demo_agi_capabilities.py
 ```
 
 ## Documentation
