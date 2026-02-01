@@ -170,17 +170,15 @@ class AGIModel(nn.Module):
             from ..perception import SceneGraphBuilder, GroundedWorldModel
             self.scene_graph_builder = SceneGraphBuilder(
                 obs_dim=cfg.obs_dim,
-                num_slots=cfg.num_object_slots,
                 object_dim=cfg.object_dim,
-                hidden_size=cfg.hidden_size,
-                num_iterations=cfg.scene_graph_iterations
+                max_objects=cfg.num_object_slots
             )
             if cfg.use_world_pred:
                 self.grounded_world_model = GroundedWorldModel(
-                    scene_graph_dim=cfg.object_dim * cfg.num_object_slots,
+                    obs_dim=cfg.obs_dim,
                     action_dim=cfg.action_dim,
-                    hidden_size=cfg.hidden_size,
-                    horizon=cfg.world_model_horizon
+                    object_dim=cfg.object_dim,
+                    max_objects=cfg.num_object_slots
                 )
         
         # Intrinsic Motivation 
@@ -194,39 +192,28 @@ class AGIModel(nn.Module):
             self.intrinsic_motivation = IntrinsicMotivationSystem(
                 state_dim=cfg.obs_dim,
                 action_dim=cfg.action_dim,
-                hidden_size=cfg.intrinsic_hidden_size,
-                config=intrinsic_config,
-                novelty_buffer_size=cfg.novelty_buffer_size
+                config=intrinsic_config
             )
         
         # Program Synthesis
         if cfg.use_program_synthesis:
-            from ..reasoning import ProgramSynthesizer, DomainSpecificLanguage
-            self.dsl = DomainSpecificLanguage(num_primitives=cfg.num_primitives)
+            from ..reasoning import ProgramSynthesizer
+            # Create synthesizer (uses built-in DSL)
             self.program_synthesizer = ProgramSynthesizer(
-                dsl=self.dsl,
-                hidden_size=cfg.program_hidden_size,
-                max_length=cfg.max_program_length,
-                num_samples=cfg.num_program_samples
+                example_dim=cfg.hidden_size,
+                max_program_length=cfg.max_program_length
             )
         
-        # Grounded Language
-        if cfg.use_grounded_language:
-            from ..nlp import GroundedLanguageModel
-            self.grounded_language = GroundedLanguageModel(
-                text_dim=cfg.hidden_size,
-                vision_dim=cfg.vision_embed_dim if cfg.use_vision else cfg.hidden_size,
-                hidden_size=cfg.grounded_lang_hidden_size,
-                vocab_size=cfg.vocab_size
-            )
+        # Grounded Language - DISABLED (requires vision and text encoders)
+        # if cfg.use_grounded_language:
+        #     from ..nlp import GroundedLanguageModel
+        #     self.grounded_language = GroundedLanguageModel(...)
         
-        # Meta-Cognition
-        if cfg.use_metacognition:
-            from ..learning import MetaCognition
-            self.metacognition = MetaCognition(
-                hidden_size=cfg.metacog_hidden_size,
-                task_embedding_dim=cfg.metacog_task_embedding_dim
-            )
+        # Meta-Cognition - DISABLED (needs proper setup)
+        # if cfg.use_metacognition:
+        #     from ..learning import MetaCognition
+        #     self.metacognition = MetaCognition(...)
+
 
     def _get_core_config(self, cfg: AGIConfig):
         """Extract VAGICore config from AGI config."""
