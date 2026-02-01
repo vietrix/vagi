@@ -160,8 +160,6 @@ class AGIModel(nn.Module):
             cl_config = ContinuousLearningConfig(
                 buffer_size=cfg.continuous_learning_buffer_size,
                 batch_size=cfg.continuous_learning_batch_size,
-                alpha=cfg.continuous_learning_alpha,
-                beta=cfg.continuous_learning_beta,
                 update_frequency=cfg.continuous_learning_update_freq
             )
             self.continuous_learning_config = cl_config
