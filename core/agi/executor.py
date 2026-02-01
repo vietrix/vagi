@@ -183,3 +183,43 @@ class AGIExecutor:
             "tools_used": tools_used,
             "tool_usage_rate": tools_used / max(total_steps, 1),
         }
+    
+    def observe_experience(
+        self,
+        obs: torch.Tensor,
+        outputs: Dict[str, Any]
+    ) -> None:
+        """Observe experience for continuous learning."""
+        if not hasattr(self.model, "_continuous_learner") or self.model._continuous_learner is None:
+            return
+        
+        obs_value = obs if obs.dim() == 2 else obs.unsqueeze(0)
+        action = outputs.get("action_logits", torch.zeros(1, self.model.cfg.action_dim, device=obs.device)).argmax(dim=-1)
+        reward = torch.zeros(obs_value.size(0), device=obs.device)
+        value = outputs.get("value", torch.zeros(obs_value.size(0), 1, device=obs.device))
+        
+        try:
+            self.model._continuous_learner.observe(
+                state={"obs": obs_value, "value": value},
+                action=action,
+                reward=reward,
+                next_state={"obs": obs_value, "value": value},
+                done=False
+            )
+        except Exception:
+            pass
+    
+    def check_metacognition(
+        self,
+        task_ids: Optional[torch.Tensor],
+        device: torch.device
+    ) -> tuple[bool, str, Dict[str, Any]]:
+        """Check if model should attempt task via meta-cognition."""
+        if not hasattr(self.model, "metacognition") or not self.model.cfg.use_metacognition or task_ids is None:
+            return True, "no_metacognition", {}
+        
+        task_emb = torch.randn(1, self.model.cfg.metacog_task_embedding_dim, device=device)
+        
+        should_attempt, reason, metrics = self.model.metacognition.should_i_attempt(task_emb)
+        
+        return should_attempt, reason, metrics
