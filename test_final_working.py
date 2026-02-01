@@ -103,7 +103,6 @@ if outputs.get("loss"):
 print("\n[8] Testing with real text data...")
 text_file = Path("data/text_corpus/ai_concepts.txt")
 if text_file.exists():
-    tokenizer = BytePairTokenizer(vocab_size=config.vocab_size)
     text = text_file.read_text()[:500]  # First 500 chars
     
     # Simple tokenization (just use char indices for now)

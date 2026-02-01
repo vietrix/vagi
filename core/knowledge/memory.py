@@ -179,16 +179,33 @@ class EpisodicMemory(nn.Module):
         k: int = 3
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Retrieve k most similar episodes."""
+        # Handle both single and batched queries
+        if query.dim() == 1:
+            query = query.unsqueeze(0)  # [hidden_size] -> [1, hidden_size]
+        
+        # query: [batch_size, hidden_size]
+        # episode_embeddings: [capacity, hidden_size]
+        # We need to compute similarity for each query
+        batch_size = query.size(0)
+        
+        # Expand for broadcasting: [batch_size, capacity, hidden_size]
+        query_expanded = query.unsqueeze(1)  # [batch_size, 1, hidden_size]
+        embeddings_expanded = self.episode_embeddings.unsqueeze(0)  # [1, capacity, hidden_size]
+        
+        # Compute cosine similarity
         similarities = F.cosine_similarity(
-            query.unsqueeze(0),
-            self.episode_embeddings,
+            query_expanded,
+            embeddings_expanded,
             dim=-1
-        )
+        )  # [batch_size, capacity]
         
-        top_scores, top_indices = torch.topk(similarities, min(k, self.capacity))
+        # Get top k for each batch item
+        k = min(k, self.capacity)
+        top_scores, top_indices = torch.topk(similarities, k, dim=-1)
         
-        retrieved_episodes = self.episodes[top_indices]
-        return retrieved_episodes, top_scores
+        # Retrieve episodes - take first batch item for now
+        retrieved_episodes = self.episodes[top_indices[0]]
+        return retrieved_episodes, top_scores[0]
 
 
 class HierarchicalMemory(nn.Module):
@@ -233,30 +250,40 @@ class HierarchicalMemory(nn.Module):
         mode: str = "auto"
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Query hierarchical memory."""
+        # Handle batch dimension
+        if query.dim() == 1:
+            query = query.unsqueeze(0)
+        batch_size = query.size(0)
+        
         if mode == "auto":
-            routing_weights = self.memory_router(query)
+            routing_weights = self.memory_router(query)  # [batch, 3]
         elif mode == "working":
-            routing_weights = torch.tensor([1.0, 0.0, 0.0], device=query.device)
+            routing_weights = torch.tensor([[1.0, 0.0, 0.0]], device=query.device).expand(batch_size, 3)
         elif mode == "semantic":
-            routing_weights = torch.tensor([0.0, 1.0, 0.0], device=query.device)
+            routing_weights = torch.tensor([[0.0, 1.0, 0.0]], device=query.device).expand(batch_size, 3)
         elif mode == "episodic":
-            routing_weights = torch.tensor([0.0, 0.0, 1.0], device=query.device)
+            routing_weights = torch.tensor([[0.0, 0.0, 1.0]], device=query.device).expand(batch_size, 3)
         else:
             raise ValueError(f"Unknown mode: {mode}")
         
-        working_output = self.working_memory.mean(dim=0)
+        # Get outputs from each memory type
+        working_output = self.working_memory.mean(dim=0).unsqueeze(0).expand(batch_size, -1)  # [batch, hidden]
         
         semantic_values, semantic_weights = self.semantic_memory.retrieve(query, k=5)
-        semantic_output = (semantic_values * semantic_weights.unsqueeze(-1)).sum(dim=1)
+        semantic_output = (semantic_values * semantic_weights.unsqueeze(-1)).sum(dim=1)  # [batch, hidden]
         
         episodic_sequences, episodic_scores = self.episodic_memory.retrieve_similar(query, k=3)
-        episodic_output = episodic_sequences.mean(dim=(0, 1))
+        # episodic_sequences: [k, seq_len, hidden]
+        episodic_output = episodic_sequences.mean(dim=(0, 1)).unsqueeze(0).expand(batch_size, -1)  # [batch, hidden]
         
+        # routing_weights: [batch, 3]
+        # outputs: [batch, hidden]
+        # Use einsum or manual multiplication
         combined_output = (
-            routing_weights[0] * working_output +
-            routing_weights[1] * semantic_output +
-            routing_weights[2] * episodic_output
-        )
+            routing_weights[:, 0:1] * working_output +
+            routing_weights[:, 1:2] * semantic_output +
+            routing_weights[:, 2:3] * episodic_output
+        )  # [batch, hidden]
         
         info = {
             "routing_weights": routing_weights,

@@ -206,8 +206,16 @@ class AnalogyMaker(nn.Module):
         
         predicted_d = self.apply_relation(target_a, relation_ab)
         
+        # Handle both cases: predicted_d might be batched
+        if predicted_d.dim() == 1:
+            predicted_d = predicted_d.unsqueeze(0)
+        if candidates.dim() == 1:
+            candidates = candidates.unsqueeze(0)
+        
+        # predicted_d: [batch?, hidden_size]
+        # candidates: [num_candidates, hidden_size]
         similarities = F.cosine_similarity(
-            predicted_d.unsqueeze(0),
+            predicted_d,
             candidates,
             dim=-1
         )
