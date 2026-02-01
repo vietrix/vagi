@@ -427,8 +427,11 @@ class AGIModel(nn.Module):
             outputs["scene_graph"] = scene_graph
             
             # Add scene graph embedding to context
-            if "object_embeddings" in scene_graph:
-                scene_embedding = scene_graph["object_embeddings"].flatten(start_dim=1)
+            if scene_graph is not None and hasattr(scene_graph, "objects"):
+                # scene_graph.objects: [num_objects, object_dim]
+                # Flatten to [num_objects * object_dim] then replicate for batch
+                scene_embedding = scene_graph.objects.reshape(-1).unsqueeze(0).expand(batch_size, -1)
+                    
                 # Project to hidden size if needed
                 if scene_embedding.size(-1) != hidden_pooled.size(-1):
                     if not hasattr(self, "scene_projection"):

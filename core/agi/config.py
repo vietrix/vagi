@@ -135,14 +135,14 @@ class AGIConfig:
     num_program_samples: int = 5
     
     # Grounded Language Understanding
-    use_grounded_language: bool = True
+    use_grounded_language: bool = False  # DISABLED - needs complex encoders
     use_vqa: bool = True
     use_instruction_following: bool = True
     grounded_lang_hidden_size: int = 512
     max_instruction_length: int = 50
     
     # Meta-Cognition
-    use_metacognition: bool = True
+    use_metacognition: bool = False  # DISABLED - needs proper setup
     metacog_hidden_size: int = 256
     metacog_task_embedding_dim: int = 128
     metacog_capability_dim: int = 64
