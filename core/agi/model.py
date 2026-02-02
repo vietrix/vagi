@@ -204,16 +204,57 @@ class AGIModel(nn.Module):
                 max_program_length=cfg.max_program_length
             )
         
-        # Grounded Language - DISABLED (requires vision and text encoders)
-        # if cfg.use_grounded_language:
-        #     from ..nlp import GroundedLanguageModel
-        #     self.grounded_language = GroundedLanguageModel(...)
-        
-        # Meta-Cognition - DISABLED (needs proper setup)
-        # if cfg.use_metacognition:
-        #     from ..learning import MetaCognition
-        #     self.metacognition = MetaCognition(...)
+        # Grounded Language - connects language to perception and action
+        if cfg.use_grounded_language and cfg.use_vision and cfg.use_language_modeling:
+            from ..nlp.grounded_language import GroundedLanguageModel
+            self.grounded_language = GroundedLanguageModel(
+                vision_encoder=self.vision_encoder,
+                text_encoder=self.text_embedding,
+                action_space_dim=cfg.action_dim,
+                vocab_size=cfg.vocab_size,
+                hidden_size=cfg.grounded_lang_hidden_size
+            )
 
+        # Meta-Cognition - self-awareness and reasoning about reasoning
+        if cfg.use_metacognition:
+            from ..learning.metacognition import MetaCognition
+            self.metacognition = MetaCognition(
+                hidden_size=cfg.metacog_hidden_size,
+                task_embedding_dim=cfg.metacog_task_embedding_dim
+            )
+
+        # Online Learning - real-time learning during inference
+        if cfg.online_learning_enabled:
+            from ..training.online_learner import OnlineLearner, OnlineLearningConfig
+            online_config = OnlineLearningConfig(
+                confidence_threshold=cfg.online_learning_confidence_threshold,
+                emergency_threshold=cfg.emergency_learning_threshold,
+                emergency_lr_multiplier=cfg.emergency_learning_lr_multiplier,
+                max_grad_norm=cfg.online_learning_max_grad_norm,
+                min_experiences=cfg.online_learning_min_experiences
+            )
+            self._online_learning_config = online_config
+            self._online_learner = None  # Will be set when optimizer is available
+
+    def setup_online_learner(self, optimizer: torch.optim.Optimizer) -> None:
+        """Setup online learner with optimizer. Call after model initialization."""
+        if hasattr(self, '_online_learning_config') and self._online_learning_config is not None:
+            from ..training.online_learner import OnlineLearner
+            self._online_learner = OnlineLearner(
+                model=self,
+                optimizer=optimizer,
+                config=self._online_learning_config
+            )
+
+    def setup_continuous_learner(self, optimizer: torch.optim.Optimizer) -> None:
+        """Setup continuous learner with optimizer. Call after model initialization."""
+        if hasattr(self, 'continuous_learning_config') and self.continuous_learning_config is not None:
+            from ..training import ContinuousLearner
+            self._continuous_learner = ContinuousLearner(
+                model=self,
+                optimizer=optimizer,
+                config=self.continuous_learning_config
+            )
 
     def _get_core_config(self, cfg: AGIConfig):
         """Extract VAGICore config from AGI config."""
@@ -468,34 +509,78 @@ class AGIModel(nn.Module):
                         context_additions.append(grounded_output["grounded_hidden"])
         
         # Meta-Cognition (inference only to avoid training overhead)
+        # Note: MetaCognition works on single samples, so we process first sample only
         if self.cfg.use_metacognition and hasattr(self, "metacognition") and mode == "inference":
-            # Task embedding (simplified - use task_ids if available)
+            # Task embedding for single sample (first in batch)
             if task_ids is not None:
                 task_emb = torch.randn(
-                    batch_size,
+                    1,
                     self.cfg.metacog_task_embedding_dim,
                     device=device
                 )
             else:
                 task_emb = torch.zeros(
-                    batch_size,
+                    1,
                     self.cfg.metacog_task_embedding_dim,
                     device=device
                 )
-            
+
+            # Use first sample's hidden state
+            hidden_for_metacog = hidden_pooled[0:1] if hidden_pooled.dim() > 1 else hidden_pooled.unsqueeze(0)
+
             # Thought sequence (use hidden states)
-            thought_sequence = [hidden_pooled]
-            
-            # Meta-cognitive analysis
-            metacog_output = self.metacognition(
-                task_embedding=task_emb,
-                current_thoughts=thought_sequence,
-                hidden_state=hidden_pooled
+            thought_sequence = [hidden_for_metacog]
+
+            # Meta-cognitive analysis (single sample)
+            try:
+                metacog_output = self.metacognition(
+                    task_embedding=task_emb,
+                    current_thoughts=thought_sequence,
+                    hidden_state=hidden_for_metacog
+                )
+                outputs["metacognition"] = metacog_output
+            except Exception:
+                # Fallback if metacognition fails
+                outputs["metacognition"] = {"confidence": 1.0, "should_attempt": True}
+        
+        # === ONLINE LEARNING INTEGRATION ===
+        # Collect confidence metrics for online learning decision
+        confidence_metrics = {}
+        if "memory_info" in outputs:
+            confidence_metrics['memory_confidence'] = outputs["memory_info"].get('confidence', 1.0)
+        if "reasoning" in outputs and "confidence" in outputs["reasoning"]:
+            confidence_metrics['reasoning_confidence'] = outputs["reasoning"]["confidence"]
+        if "metacognition" in outputs:
+            metacog = outputs["metacognition"]
+            if isinstance(metacog, dict):
+                confidence_metrics['action_confidence'] = metacog.get('confidence', 1.0)
+        if "uncertainty" in outputs:
+            confidence_metrics['uncertainty'] = outputs["uncertainty"].mean().item() if isinstance(outputs["uncertainty"], torch.Tensor) else outputs["uncertainty"]
+
+        # Process through online learner if available and in inference mode
+        if (
+            mode == "inference"
+            and hasattr(self, '_online_learner')
+            and self._online_learner is not None
+            and obs is not None
+        ):
+            state_dict = {'obs': obs, 'hidden': hidden_pooled}
+            action = outputs.get('action_logits', torch.zeros(batch_size, self.cfg.action_dim, device=device))
+
+            online_result = self._online_learner.process_inference_step(
+                hidden_state=hidden_pooled,
+                confidence_metrics=confidence_metrics,
+                state=state_dict,
+                action=action.argmax(dim=-1) if action.dim() > 1 else action,
+                outputs=outputs
             )
-            outputs["metacognition"] = metacog_output
-        
+            outputs["online_learning"] = online_result
+
+        # Store confidence metrics for external use
+        outputs["confidence_metrics"] = confidence_metrics
+
         # === END NEW MODULES ===
-        
+
         if context_additions:
             augmented_hidden = hidden_pooled + sum(context_additions)
             outputs["augmented_hidden"] = augmented_hidden

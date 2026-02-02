@@ -424,7 +424,7 @@ class EmbodiedLanguageLearner(nn.Module):
         instruction: torch.Tensor,
         execution_result: Dict[str, torch.Tensor],
         feedback: torch.Tensor
-    ) -> Torch.Tensor:
+    ) -> torch.Tensor:
         """Update language understanding from execution feedback.
         
         Args:

@@ -25,6 +25,12 @@ from .continuous_learner import (
     SelfSupervisedLabeler,
     ExperienceReplay,
 )
+from .online_learner import (
+    OnlineLearner,
+    OnlineLearningConfig,
+    ConfidenceGate,
+    OnlineExperienceBuffer,
+)
 
 __all__ = [
     "ExperienceBuffer",
@@ -40,7 +46,7 @@ __all__ = [
     "world_loss",
     "compute_gae",
     "td_lambda_returns",
-    "ConfidenceCalibrator", 
+    "ConfidenceCalibrator",
     "aggregate_metrics",
     "compute_drop",
     "should_rollback",
@@ -53,4 +59,9 @@ __all__ = [
     "grounded_language_loss",
     "intrinsic_reward_loss",
     "meta_cognition_loss",
+    # Online Learning (new)
+    "OnlineLearner",
+    "OnlineLearningConfig",
+    "ConfidenceGate",
+    "OnlineExperienceBuffer",
 ]
