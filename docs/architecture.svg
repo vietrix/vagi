@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="900" height="700" viewBox="0 0 900 700" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="headerGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#4F46E5;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#7C3AED;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="transformerGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#3B82F6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1D4ED8;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="moduleGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#10B981;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#059669;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="outputGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#F59E0B;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#D97706;stop-opacity:1" />
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="2" dy="2" stdDeviation="3" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="700" fill="#0F172A"/>
+
+  <!-- Title -->
+  <text x="450" y="40" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="white">vAGI Architecture</text>
+  <text x="450" y="65" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="#94A3B8">Artificial General Intelligence System</text>
+
+  <!-- Input Section -->
+  <g transform="translate(50, 90)">
+    <rect width="180" height="50" rx="8" fill="#1E293B" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+    <text x="90" y="30" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="white">Input (Text)</text>
+  </g>
+
+  <!-- Arrow -->
+  <line x1="230" y1="115" x2="270" y2="115" stroke="#64748B" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <!-- Tokenizer -->
+  <g transform="translate(280, 90)">
+    <rect width="140" height="50" rx="8" fill="#1E293B" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+    <text x="70" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">BPE Tokenizer</text>
+    <text x="70" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#94A3B8">Vietnamese + EN</text>
+  </g>
+
+  <!-- Arrow -->
+  <line x1="420" y1="115" x2="460" y2="115" stroke="#64748B" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- Embedding -->
+  <g transform="translate(470, 90)">
+    <rect width="140" height="50" rx="8" fill="#1E293B" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+    <text x="70" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Embedding</text>
+    <text x="70" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#94A3B8">+ RoPE Position</text>
+  </g>
+
+  <!-- Arrow -->
+  <line x1="610" y1="115" x2="650" y2="115" stroke="#64748B" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- Memory -->
+  <g transform="translate(660, 90)">
+    <rect width="180" height="50" rx="8" fill="#1E293B" stroke="#334155" stroke-width="2" filter="url(#shadow)"/>
+    <text x="90" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Memory System</text>
+    <text x="90" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#94A3B8">KV Cache + Slots</text>
+  </g>
+
+  <!-- Main Transformer Block -->
+  <g transform="translate(100, 170)">
+    <rect width="700" height="180" rx="12" fill="url(#transformerGrad)" filter="url(#shadow)"/>
+    <text x="350" y="30" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="white">Transformer Backbone</text>
+
+    <!-- Attention Block -->
+    <g transform="translate(30, 50)">
+      <rect width="180" height="100" rx="8" fill="#1E40AF"/>
+      <text x="90" y="35" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Multi-Head</text>
+      <text x="90" y="55" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Self-Attention</text>
+      <text x="90" y="80" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#93C5FD">GQA + RoPE</text>
+    </g>
+
+    <!-- Arrow -->
+    <line x1="210" y1="100" x2="250" y2="100" stroke="white" stroke-width="2" marker-end="url(#arrowheadW)"/>
+    <defs>
+      <marker id="arrowheadW" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="white"/>
+      </marker>
+    </defs>
+
+    <!-- FFN Block -->
+    <g transform="translate(260, 50)">
+      <rect width="180" height="100" rx="8" fill="#1E40AF"/>
+      <text x="90" y="35" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Feed-Forward</text>
+      <text x="90" y="55" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Network</text>
+      <text x="90" y="80" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#93C5FD">SwiGLU Activation</text>
+    </g>
+
+    <!-- Arrow -->
+    <line x1="440" y1="100" x2="480" y2="100" stroke="white" stroke-width="2" marker-end="url(#arrowheadW)"/>
+
+    <!-- Norm Block -->
+    <g transform="translate(490, 50)">
+      <rect width="180" height="100" rx="8" fill="#1E40AF"/>
+      <text x="90" y="35" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">Layer Norm</text>
+      <text x="90" y="55" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="bold" fill="white">+ Residual</text>
+      <text x="90" y="80" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#93C5FD">N Layers (4-32)</text>
+    </g>
+  </g>
+
+  <!-- Output Heads Section -->
+  <g transform="translate(100, 380)">
+    <rect width="700" height="100" rx="12" fill="url(#outputGrad)" filter="url(#shadow)"/>
+    <text x="350" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="white">Output Heads</text>
+
+    <!-- Language Head -->
+    <g transform="translate(30, 40)">
+      <rect width="140" height="45" rx="6" fill="#B45309"/>
+      <text x="70" y="28" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Language Head</text>
+    </g>
+
+    <!-- Meta-Cognition -->
+    <g transform="translate(190, 40)">
+      <rect width="140" height="45" rx="6" fill="#B45309"/>
+      <text x="70" y="28" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Meta-Cognition</text>
+    </g>
+
+    <!-- Confidence -->
+    <g transform="translate(350, 40)">
+      <rect width="140" height="45" rx="6" fill="#B45309"/>
+      <text x="70" y="28" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Confidence</text>
+    </g>
+
+    <!-- Online Learning -->
+    <g transform="translate(510, 40)">
+      <rect width="160" height="45" rx="6" fill="#B45309"/>
+      <text x="80" y="28" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Online Learning</text>
+    </g>
+  </g>
+
+  <!-- Extended Modules -->
+  <text x="450" y="520" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#94A3B8">Extended Cognitive Modules</text>
+
+  <g transform="translate(50, 540)">
+    <!-- Row 1 -->
+    <g transform="translate(0, 0)">
+      <rect width="180" height="55" rx="8" fill="url(#moduleGrad)" filter="url(#shadow)"/>
+      <text x="90" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Program Synthesis</text>
+      <text x="90" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#A7F3D0">DSL + Neural</text>
+    </g>
+
+    <g transform="translate(200, 0)">
+      <rect width="180" height="55" rx="8" fill="url(#moduleGrad)" filter="url(#shadow)"/>
+      <text x="90" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Scene Graphs</text>
+      <text x="90" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#A7F3D0">Slot Attention</text>
+    </g>
+
+    <g transform="translate(400, 0)">
+      <rect width="180" height="55" rx="8" fill="url(#moduleGrad)" filter="url(#shadow)"/>
+      <text x="90" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Intrinsic Motivation</text>
+      <text x="90" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#A7F3D0">Curiosity-Driven</text>
+    </g>
+
+    <g transform="translate(600, 0)">
+      <rect width="180" height="55" rx="8" fill="url(#moduleGrad)" filter="url(#shadow)"/>
+      <text x="90" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Continuous Learning</text>
+      <text x="90" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#A7F3D0">Experience Replay</text>
+    </g>
+
+    <!-- Row 2 -->
+    <g transform="translate(0, 70)">
+      <rect width="180" height="55" rx="8" fill="url(#moduleGrad)" filter="url(#shadow)"/>
+      <text x="90" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Grounded Language</text>
+      <text x="90" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#A7F3D0">Vision-Language</text>
+    </g>
+
+    <g transform="translate(200, 70)">
+      <rect width="180" height="55" rx="8" fill="url(#moduleGrad)" filter="url(#shadow)"/>
+      <text x="90" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Knowledge Graph</text>
+      <text x="90" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#A7F3D0">Entity-Relation</text>
+    </g>
+
+    <g transform="translate(400, 70)">
+      <rect width="180" height="55" rx="8" fill="url(#moduleGrad)" filter="url(#shadow)"/>
+      <text x="90" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Abstract Reasoning</text>
+      <text x="90" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#A7F3D0">Relational + Causal</text>
+    </g>
+
+    <g transform="translate(600, 70)">
+      <rect width="180" height="55" rx="8" fill="url(#moduleGrad)" filter="url(#shadow)"/>
+      <text x="90" y="25" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="white">Tool Use</text>
+      <text x="90" y="42" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#A7F3D0">Code Execution</text>
+    </g>
+  </g>
+
+  <!-- Footer -->
+  <text x="450" y="685" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#64748B">vAGI - Research-Focused AGI Implementation | PyTorch</text>
+</svg>

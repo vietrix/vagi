@@ -111,6 +111,14 @@ class AGIConfig:
     continuous_learning_update_freq: int = 10
     continuous_learning_alpha: float = 0.6  # Priority exponent
     continuous_learning_beta: float = 0.4  # Importance sampling
+
+    # Online Learning (Real-time learning during inference)
+    online_learning_enabled: bool = True
+    online_learning_confidence_threshold: float = 0.5  # Learn when confidence < this
+    online_learning_min_experiences: int = 4  # Min experiences before online update
+    emergency_learning_threshold: float = 0.3  # Trigger emergency learning below this
+    emergency_learning_lr_multiplier: float = 2.0  # LR boost for emergency learning
+    online_learning_max_grad_norm: float = 1.0  # Gradient clipping for stability
     
     # Object-Centric Perception (Scene Graphs)
     use_scene_graphs: bool = True
@@ -135,14 +143,14 @@ class AGIConfig:
     num_program_samples: int = 5
     
     # Grounded Language Understanding
-    use_grounded_language: bool = False  # DISABLED - needs complex encoders
+    use_grounded_language: bool = True  # ENABLED - connects language to perception/action
     use_vqa: bool = True
     use_instruction_following: bool = True
     grounded_lang_hidden_size: int = 512
     max_instruction_length: int = 50
-    
+
     # Meta-Cognition
-    use_metacognition: bool = False  # DISABLED - needs proper setup
+    use_metacognition: bool = True  # ENABLED - self-awareness and reasoning about reasoning
     metacog_hidden_size: int = 256
     metacog_task_embedding_dim: int = 128
     metacog_capability_dim: int = 64
@@ -257,4 +265,56 @@ def load_agi_small_config() -> AGIConfig:
         semantic_capacity=1000,
         episodic_capacity=100,
         num_tools=20,
+    )
+
+
+def load_agi_tiny_config() -> AGIConfig:
+    """Load tiny AGI configuration for fast CPU training."""
+    return AGIConfig(
+        vocab_size=5000,
+        hidden_size=128,
+        n_layers=4,
+        n_heads=4,
+        n_kv_heads=4,
+        mlp_ratio=2.0,
+        max_seq_len=256,
+        obs_dim=64,
+        obs_tokens=2,
+        action_dim=64,
+        memory_slots=4,
+        dropout=0.1,
+        use_rotary=True,
+        use_gqa=False,
+        use_flash_attn=False,
+        use_grad_checkpoint=False,
+        use_task_embedding=False,
+        use_reflection=False,
+        use_budget_head=False,
+        use_vision=False,
+        use_world_pred=False,
+        use_confidence=True,
+        use_uncertainty=True,
+        use_action_validity=False,
+        use_special_tokens=False,
+        use_language_modeling=True,
+        use_masked_lm=False,
+        use_knowledge_graph=False,
+        use_semantic_memory=False,
+        use_episodic_memory=False,
+        use_abstract_reasoning=False,
+        use_meta_learning=False,
+        use_curriculum=False,
+        use_tool_use=False,
+        use_multimodal_fusion=False,
+        use_transfer_learning=False,
+        use_continuous_learning=False,
+        online_learning_enabled=True,
+        use_scene_graphs=False,
+        use_intrinsic_motivation=False,
+        use_program_synthesis=False,
+        use_grounded_language=False,
+        use_metacognition=True,
+        metacog_hidden_size=64,
+        metacog_task_embedding_dim=32,
+        metacog_capability_dim=32,
     )

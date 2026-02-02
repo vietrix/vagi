@@ -1,144 +1,167 @@
-"""Minimal language-model training script for vAGI."""
+#!/usr/bin/env python3
+"""
+Train vAGI model với JSONL dataset.
 
-from __future__ import annotations
+Usage:
+    python scripts/train.py --data data/train_dataset.jsonl --epochs 10
+    python scripts/train.py --data data/train_dataset.jsonl --epochs 5 --small
+"""
 
 import argparse
+import json
+import os
+import sys
 from pathlib import Path
-from typing import Optional
+
+# Fix output buffering
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+sys.stdout = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
 
 import torch
-from torch.utils.data import DataLoader
+from torch import nn
+from torch.utils.data import Dataset, DataLoader
+from torch.optim import AdamW
 
-from vagi_core import VAGIConfig, VAGICore
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.collate import make_collate_fn
-from scripts.config import TrainConfig
-from scripts.dataset_text import TextDataset, build_tokenizer, load_texts
-from io.checkpoint import load_checkpoint, save_checkpoint
-from scripts.utils import get_lr, set_deterministic
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train vAGI on a tiny text dataset.")
-    parser.add_argument("--data", type=str, default="data/sample/sample.txt")
-    parser.add_argument("--out-dir", type=str, default="runs/minimal")
-    parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--save-every", type=int, default=50)
-    parser.add_argument("--log-every", type=int, default=10)
-    parser.add_argument("--resume", type=str, default=None)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--deterministic", action="store_true")
-    parser.add_argument("--max-seq-len", type=int, default=64)
-    parser.add_argument("--hidden-size", type=int, default=64)
-    parser.add_argument("--layers", type=int, default=2)
-    parser.add_argument("--heads", type=int, default=4)
-    parser.add_argument("--mlp-ratio", type=float, default=2.0)
-    parser.add_argument("--obs-dim", type=int, default=0)
-    parser.add_argument("--obs-tokens", type=int, default=0)
-    parser.add_argument("--action-dim", type=int, default=8)
-    parser.add_argument("--memory-slots", type=int, default=4)
-    return parser.parse_args()
+from core.agi import AGIModel
+from core.agi.config import AGIConfig, load_agi_small_config, load_agi_tiny_config
+from core.nlp import BytePairTokenizer
 
 
-def build_train_config(args: argparse.Namespace) -> TrainConfig:
-    return TrainConfig(
-        data_path=args.data,
-        out_dir=args.out_dir,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        max_steps=args.max_steps,
-        save_every=args.save_every,
-        log_every=args.log_every,
-        seed=args.seed,
-        max_seq_len=args.max_seq_len,
-        hidden_size=args.hidden_size,
-        n_layers=args.layers,
-        n_heads=args.heads,
-        mlp_ratio=args.mlp_ratio,
-        obs_dim=args.obs_dim,
-        obs_tokens=args.obs_tokens,
-        action_dim=args.action_dim,
-        memory_slots=args.memory_slots,
-        use_world_pred=False,
-    )
+class TextDataset(Dataset):
+    """Simple JSONL dataset."""
+
+    def __init__(self, path: str, tokenizer, max_len: int = 256):
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.samples = []
+
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        item = json.loads(line)
+                        text = item.get('input', '') + ' ' + item.get('output', '')
+                        self.samples.append(text)
+                    except:
+                        pass
+
+        print(f"Loaded {len(self.samples)} samples", flush=True)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        ids = self.tokenizer.encode(self.samples[idx], max_length=self.max_len)
+        if len(ids) < self.max_len:
+            ids = ids + [0] * (self.max_len - len(ids))
+        return torch.tensor(ids[:self.max_len], dtype=torch.long)
 
 
-def main() -> None:
-    args = parse_args()
-    cfg = build_train_config(args)
-    set_deterministic(cfg.seed, args.deterministic)
+def collate(batch):
+    return torch.stack(batch)
 
-    texts = load_texts(cfg.data_path)
-    tokenizer = build_tokenizer(texts)
-    dataset = TextDataset(texts, tokenizer, max_length=cfg.max_seq_len)
 
-    collate_fn = make_collate_fn(
-        pad_id=tokenizer.pad_id,
-        max_length=cfg.max_seq_len,
-        obs_dim=cfg.obs_dim,
-        add_obs=cfg.obs_dim > 0,
-    )
-    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn)
+def main():
+    parser = argparse.ArgumentParser(description='Train vAGI')
+    parser.add_argument('--data', default='data/train_dataset.jsonl')
+    parser.add_argument('--output', default='checkpoints/model.pt')
+    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--batch', type=int, default=2)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--small', action='store_true', help='Use small config')
+    parser.add_argument('--tiny', action='store_true', help='Use tiny config (fast CPU)')
+    args = parser.parse_args()
 
-    model_cfg = VAGIConfig(
-        vocab_size=tokenizer.vocab_size,
-        hidden_size=cfg.hidden_size,
-        n_layers=cfg.n_layers,
-        n_heads=cfg.n_heads,
-        n_kv_heads=cfg.n_heads,
-        mlp_ratio=cfg.mlp_ratio,
-        max_seq_len=cfg.max_seq_len,
-        obs_dim=max(cfg.obs_dim, 1) if cfg.obs_dim > 0 else 1,
-        obs_tokens=cfg.obs_tokens,
-        action_dim=cfg.action_dim,
-        memory_slots=cfg.memory_slots,
-        dropout=0.0,
-        use_world_pred=False,
-    )
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Device: {device}", flush=True)
 
-    model = VAGICore(model_cfg)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
+    # Config & Model
+    if args.tiny:
+        config = load_agi_tiny_config()
+    elif args.small:
+        config = load_agi_small_config()
+    else:
+        config = AGIConfig()
+    tokenizer = BytePairTokenizer(vocab_size=config.vocab_size)
+
+    print("Loading data...", flush=True)
+
+    # Load raw texts for tokenizer training
+    raw_texts = []
+    with open(args.data, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                try:
+                    item = json.loads(line)
+                    text = item.get('input', '') + ' ' + item.get('output', '')
+                    raw_texts.append(text)
+                except:
+                    pass
+
+    # Train tokenizer on dataset
+    print(f"Training tokenizer on {len(raw_texts)} texts...", flush=True)
+    tokenizer.train(raw_texts, num_merges=1000)
+    print(f"Tokenizer vocab size: {len(tokenizer.vocab)}", flush=True)
+
+    dataset = TextDataset(args.data, tokenizer)
+    loader = DataLoader(dataset, batch_size=args.batch, shuffle=True, collate_fn=collate)
+
+    print("Creating model...", flush=True)
+    model = AGIModel(config).to(device)
+    params = sum(p.numel() for p in model.parameters())
+    print(f"Parameters: {params:,}", flush=True)
+
+    optimizer = AdamW(model.parameters(), lr=args.lr)
+
+    # Train
+    print(f"\nTraining for {args.epochs} epochs...", flush=True)
     model.train()
 
-    out_dir = Path(cfg.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    step = 0
-    if args.resume:
-        meta = load_checkpoint(model, optimizer=optimizer, ckpt_path=args.resume)
-        step = int(meta.get("step", 0))
-    for epoch in range(args.epochs):
+    for epoch in range(1, args.epochs + 1):
+        total_loss = 0.0
         for batch in loader:
-            input_ids = batch["input_ids"]
-            labels = batch["labels"]
-            obs = batch.get("obs") if cfg.obs_dim > 0 else None
-            state = model.init_state(input_ids.shape[0])
+            batch = batch.to(device)
 
-            out = model.forward(input_ids=input_ids, obs=obs, state=state, labels=labels, return_loss=True)
-            loss = out["loss"]
-            if loss is None:
-                raise ValueError("No loss returned by model.")
+            optimizer.zero_grad()
+            out = model(input_ids=batch, mode='train')
 
-            optimizer.zero_grad(set_to_none=True)
+            # Language modeling loss
+            logits = out.get('text_logits')
+            if logits is None:
+                continue
+
+            # Next token prediction - align shapes
+            seq_len = batch.size(1)
+            pred = logits[:, :seq_len-1, :].contiguous()
+            target = batch[:, 1:].contiguous()
+
+            loss = nn.CrossEntropyLoss(ignore_index=0)(
+                pred.view(-1, pred.size(-1)),
+                target.view(-1)
+            )
+
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            total_loss += loss.item()
 
-            step += 1
-            if step % cfg.log_every == 0:
-                print(f"step={step} loss={loss.item():.6f} lr={get_lr(optimizer):.6f}")
+        avg = total_loss / len(loader)
+        print(f"Epoch {epoch}/{args.epochs} - Loss: {avg:.4f}", flush=True)
 
-            if cfg.save_every and step % cfg.save_every == 0:
-                save_checkpoint(model, optimizer, step=step, out_dir=out_dir, extra={"epoch": epoch + 1})
+    # Save model and tokenizer
+    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'config': config,
+        'tokenizer_vocab': tokenizer.vocab,
+        'tokenizer_merges': tokenizer.merges,
+    }, args.output)
+    print(f"\nSaved to {args.output}", flush=True)
 
-            if cfg.max_steps is not None and step >= cfg.max_steps:
-                break
-        if cfg.max_steps is not None and step >= cfg.max_steps:
-            break
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -21,20 +21,58 @@ class BytePairTokenizer:
         self._build_base_vocab()
 
     def _build_base_vocab(self) -> None:
-        """Initialize with ASCII characters."""
+        """Initialize with ASCII + Vietnamese characters."""
+        idx = 0
+
+        # ASCII printable characters
         for i in range(256):
             char = chr(i)
-            self.vocab[char] = i
-            self.inverse_vocab[i] = char
-        
+            self.vocab[char] = idx
+            self.inverse_vocab[idx] = char
+            idx += 1
+
+        # Vietnamese characters (diacritics)
+        vietnamese_chars = (
+            # Lowercase vowels with diacritics
+            "àáảãạăằắẳẵặâầấẩẫậ"  # a variants
+            "èéẻẽẹêềếểễệ"        # e variants
+            "ìíỉĩị"              # i variants
+            "òóỏõọôồốổỗộơờớởỡợ"  # o variants
+            "ùúủũụưừứửữự"        # u variants
+            "ỳýỷỹỵ"              # y variants
+            "đ"                   # d with stroke
+            # Uppercase vowels with diacritics
+            "ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬ"
+            "ÈÉẺẼẸÊỀẾỂỄỆ"
+            "ÌÍỈĨỊ"
+            "ÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢ"
+            "ÙÚỦŨỤƯỪỨỬỮỰ"
+            "ỲÝỶỸỴ"
+            "Đ"
+        )
+        for char in vietnamese_chars:
+            if char not in self.vocab:
+                self.vocab[char] = idx
+                self.inverse_vocab[idx] = char
+                idx += 1
+
+        # Common punctuation and symbols
+        extra_chars = "–—''""…•°±×÷²³√∞≈≠≤≥πΣ"
+        for char in extra_chars:
+            if char not in self.vocab:
+                self.vocab[char] = idx
+                self.inverse_vocab[idx] = char
+                idx += 1
+
+        # Special tokens
         special_tokens = [
-            "<PAD>", "<UNK>", "<BOS>", "<EOS>", 
+            "<PAD>", "<UNK>", "<BOS>", "<EOS>",
             "<SEP>", "<CLS>", "<MASK>", "<ACT>"
         ]
-        for idx, token in enumerate(special_tokens):
-            token_id = 256 + idx
-            self.vocab[token] = token_id
-            self.inverse_vocab[token_id] = token
+        for token in special_tokens:
+            self.vocab[token] = idx
+            self.inverse_vocab[idx] = token
+            idx += 1
 
     def train(self, texts: List[str], num_merges: int = 10000) -> None:
         """Train BPE on corpus."""
