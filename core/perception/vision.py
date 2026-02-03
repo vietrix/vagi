@@ -327,13 +327,22 @@ class MultiModalEncoder(nn.Module):
     def forward(
         self,
         image: Optional[torch.Tensor] = None,
-        text: Optional[torch.Tensor] = None
+        text: Optional[torch.Tensor] = None,
+        vision_features: Optional[torch.Tensor] = None  # Pre-computed vision features
     ) -> torch.Tensor:
-        """Encode multi-modal inputs."""
+        """Encode multi-modal inputs.
+
+        Args:
+            image: Raw image tensor (will be encoded if vision_features not provided)
+            text: Text input tensor
+            vision_features: Pre-computed vision features (avoids redundant encoding)
+        """
         modality_features = []
-        
-        if image is not None:
-            vision_features = self.vision_encoder(image)
+
+        if vision_features is not None or image is not None:
+            # Use pre-computed features if available, otherwise encode
+            if vision_features is None:
+                vision_features = self.vision_encoder(image)
             if vision_features.dim() == 3:
                 vision_proj = self.vision_proj(vision_features)
             else:

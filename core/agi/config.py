@@ -55,7 +55,8 @@ class AGIConfig:
     
     use_action_validity: bool = True
     action_validity_threshold: float = 0.5
-    
+    action_rejection_threshold: float = 0.2  # Reject actions when confidence below this
+
     ood_uncertainty_threshold: float = 2.0
     ood_trace_threshold: float = 0.1
     ood_policy: str = "fallback"
