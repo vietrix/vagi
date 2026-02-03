@@ -289,35 +289,67 @@ class CounterfactualReasoner(nn.Module):
         self,
         world_model: nn.Module,
         hidden_size: int,
+        intervention_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.world_model = world_model
         self.hidden_size = hidden_size
-        
+        self.intervention_dim = intervention_dim
+
+        # Lazy initialization of intervention projection (set on first forward)
+        self._intervention_proj: Optional[nn.Linear] = None
+
         self.intervention_encoder = nn.Sequential(
             nn.Linear(hidden_size * 2, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size)
         )
-        
+
         self.outcome_comparator = nn.Sequential(
             nn.Linear(hidden_size * 2, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1)
         )
 
+    def _project_intervention(self, intervention: torch.Tensor) -> torch.Tensor:
+        """Project intervention to hidden_size dimension if needed."""
+        intervention_dim = intervention.size(-1)
+
+        if intervention_dim == self.hidden_size:
+            return intervention
+
+        # Lazy initialization of projection layer
+        if self._intervention_proj is None or self._intervention_proj.in_features != intervention_dim:
+            self._intervention_proj = nn.Linear(
+                intervention_dim, self.hidden_size, device=intervention.device
+            )
+
+        return self._intervention_proj(intervention)
+
     def generate_counterfactual(
         self,
         factual_state: torch.Tensor,
         intervention: torch.Tensor
     ) -> torch.Tensor:
-        """Generate counterfactual outcome."""
+        """Generate counterfactual outcome.
+
+        Args:
+            factual_state: [B, hidden_size] current state representation
+            intervention: [B, intervention_dim] intervention (e.g., action probs)
+                          Will be projected to hidden_size if dimensions differ
+
+        Returns:
+            counterfactual_state: [B, hidden_size] predicted state after intervention
+        """
+        # Project intervention to match hidden_size if needed
+        intervention_proj = self._project_intervention(intervention)
+
         intervention_encoding = self.intervention_encoder(
-            torch.cat([factual_state, intervention], dim=-1)
+            torch.cat([factual_state, intervention_proj], dim=-1)
         )
-        
+
         counterfactual_state = factual_state + intervention_encoding
-        
+
         return counterfactual_state
 
     def compare_outcomes(

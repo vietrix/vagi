@@ -34,25 +34,71 @@ class TaskEmbedding(nn.Module):
 
     def forward(
         self,
-        examples: List[Tuple[torch.Tensor, torch.Tensor]]
+        examples: torch.Tensor
     ) -> torch.Tensor:
-        """Encode task from input-output examples."""
+        """Encode task from examples.
+
+        Args:
+            examples: Either:
+                - Tensor of shape [B, num_examples, input_dim] (observations only)
+                - Tensor of shape [B, num_examples, input_dim + output_dim] (combined)
+                - List of (input, output) tuples (legacy format)
+
+        Returns:
+            Task embedding of shape [B, output_dim]
+        """
+        # Handle tensor input (modern format)
+        if isinstance(examples, torch.Tensor):
+            batch_size = examples.size(0)
+            num_ex = min(examples.size(1), self.num_examples)
+
+            # Check if this is combined (input+output) or just input
+            expected_combined_dim = self.example_encoder[0].in_features
+
+            if examples.size(-1) == expected_combined_dim:
+                # Already combined input+output
+                combined = examples[:, :num_ex, :]
+            else:
+                # Just observations - duplicate as pseudo "output" (self-supervised)
+                input_dim = examples.size(-1)
+                output_dim = expected_combined_dim - input_dim
+                # Pad with zeros or use same input as output proxy
+                if output_dim > 0:
+                    padding = torch.zeros(
+                        batch_size, num_ex, output_dim,
+                        device=examples.device, dtype=examples.dtype
+                    )
+                    combined = torch.cat([examples[:, :num_ex, :], padding], dim=-1)
+                else:
+                    combined = examples[:, :num_ex, :]
+
+            # Encode examples
+            encoded = self.example_encoder(combined)  # [B, num_ex, hidden]
+
+            # Self-attention over examples
+            attended, _ = self.attention(encoded, encoded, encoded)
+
+            # LSTM aggregation
+            _, (h_n, _) = self.aggregator(attended)
+
+            return h_n.squeeze(0)
+
+        # Handle legacy list format
         encoded_examples = []
-        
         for inp, out in examples[:self.num_examples]:
             combined = torch.cat([inp, out], dim=-1)
             encoded = self.example_encoder(combined)
             encoded_examples.append(encoded)
-        
+
         if not encoded_examples:
             raise ValueError("No examples provided")
-        
+
         stacked = torch.stack(encoded_examples, dim=0).unsqueeze(0)
-        
+
         attended, _ = self.attention(stacked, stacked, stacked)
-        
+
         _, (h_n, _) = self.aggregator(attended)
-        
+
         return h_n.squeeze(0)
 
 

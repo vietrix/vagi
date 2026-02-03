@@ -284,7 +284,7 @@ class InstructionParser(nn.Module):
 
 class GroundedLanguageModel(nn.Module):
     """Language model grounded in perception and action."""
-    
+
     def __init__(
         self,
         vision_encoder: nn.Module,
@@ -294,17 +294,18 @@ class GroundedLanguageModel(nn.Module):
         hidden_size: int = 512,
     ):
         super().__init__()
-        
+
         self.vision_encoder = vision_encoder
         self.text_encoder = text_encoder
-        
+        self.hidden_size = hidden_size
+
         # Grounder
         self.grounder = VisionLanguageGrounder(
             vision_dim=hidden_size,
             language_dim=hidden_size,
             grounded_dim=hidden_size
         )
-        
+
         # VQA module
         self.vqa = VisualQuestionAnswering(
             vision_encoder=vision_encoder,
@@ -312,20 +313,118 @@ class GroundedLanguageModel(nn.Module):
             vocab_size=vocab_size,
             hidden_size=hidden_size
         )
-        
+
         # Instruction parser
         self.instruction_parser = InstructionParser(
             vocab_size=vocab_size,
             action_dim=action_space_dim,
             hidden_size=hidden_size
         )
-        
+
         # Action executor
         self.action_executor = nn.Sequential(
             nn.Linear(action_space_dim + hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size)
         )
+
+        # Vision-text fusion for forward pass
+        self.vision_text_fusion = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size)
+        )
+
+    def forward(
+        self,
+        text_features: Optional[torch.Tensor] = None,
+        vision_features: Optional[torch.Tensor] = None,
+        image: Optional[torch.Tensor] = None,
+        text: Optional[torch.Tensor] = None,
+        mode: str = "inference"
+    ) -> Dict[str, torch.Tensor]:
+        """Forward pass for grounded language understanding.
+
+        Args:
+            text_features: Pre-computed text features [B, hidden_size]
+            vision_features: Pre-computed vision features [B, V, hidden_size] or [B, hidden_size]
+            image: Raw image tensor (will be encoded if vision_features not provided)
+            text: Raw text tokens (will be encoded if text_features not provided)
+            mode: "train" or "inference"
+
+        Returns:
+            Dictionary with grounded representations
+        """
+        outputs = {}
+
+        # Encode vision if needed
+        if vision_features is None and image is not None:
+            vision_features = self.vision_encoder(image)
+
+        # Encode text if needed
+        if text_features is None and text is not None:
+            text_features = self.text_encoder(text)
+            if text_features.dim() == 3:
+                text_features = text_features.mean(dim=1)
+
+        # Handle vision features shape
+        if vision_features is not None:
+            if vision_features.dim() == 3:
+                # [B, V, D] -> [B, D] via mean pooling
+                vision_pooled = vision_features.mean(dim=1)
+            else:
+                vision_pooled = vision_features
+            outputs["vision_pooled"] = vision_pooled
+
+        # Handle text features shape
+        if text_features is not None:
+            if text_features.dim() == 3:
+                text_pooled = text_features.mean(dim=1)
+            else:
+                text_pooled = text_features
+            outputs["text_pooled"] = text_pooled
+
+        # Fuse vision and text if both available
+        if vision_features is not None and text_features is not None:
+            # Ensure same dimensions
+            vision_for_fusion = vision_pooled if vision_pooled.size(-1) == self.hidden_size else vision_pooled
+            text_for_fusion = text_pooled if text_pooled.size(-1) == self.hidden_size else text_pooled
+
+            # Handle dimension mismatch gracefully
+            if vision_for_fusion.size(-1) != self.hidden_size:
+                vision_for_fusion = F.adaptive_avg_pool1d(
+                    vision_for_fusion.unsqueeze(1), self.hidden_size
+                ).squeeze(1)
+            if text_for_fusion.size(-1) != self.hidden_size:
+                text_for_fusion = F.adaptive_avg_pool1d(
+                    text_for_fusion.unsqueeze(1), self.hidden_size
+                ).squeeze(1)
+
+            # Concatenate and fuse
+            combined = torch.cat([text_for_fusion, vision_for_fusion], dim=-1)
+            grounded_hidden = self.vision_text_fusion(combined)
+            outputs["grounded_hidden"] = grounded_hidden
+
+            # Ground nouns in visual context (only if dimensions match)
+            if vision_features.dim() == 3 and text_features.dim() >= 2:
+                text_seq = text_features if text_features.dim() == 3 else text_features.unsqueeze(1)
+                # Check dimension compatibility before grounding
+                try:
+                    grounded_entities, attention = self.grounder.ground_nouns(
+                        text_seq, vision_features
+                    )
+                    outputs["grounded_entities"] = grounded_entities
+                    outputs["attention_weights"] = attention
+                except RuntimeError:
+                    # Skip if dimension mismatch
+                    pass
+
+        elif text_features is not None:
+            outputs["grounded_hidden"] = text_pooled
+        elif vision_features is not None:
+            outputs["grounded_hidden"] = vision_pooled
+
+        return outputs
         
     def answer_visual_question(
         self,

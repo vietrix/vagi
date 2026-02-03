@@ -135,22 +135,73 @@ class VisionTransformerEncoder(nn.Module):
         
         self.norm = nn.LayerNorm(embed_dim)
 
+    def interpolate_pos_embed(self, x: torch.Tensor, h: int, w: int) -> torch.Tensor:
+        """Interpolate position embeddings for different image sizes.
+
+        Args:
+            x: Input tensor with shape [B, num_patches + 1, embed_dim]
+            h: Height in patches
+            w: Width in patches
+
+        Returns:
+            Position embeddings interpolated to match input size
+        """
+        num_patches = h * w
+        num_positions = self.pos_embed.size(1)
+
+        if num_patches + 1 == num_positions:
+            return self.pos_embed
+
+        # Separate class token and patch embeddings
+        cls_pos = self.pos_embed[:, :1, :]  # [1, 1, D]
+        patch_pos = self.pos_embed[:, 1:, :]  # [1, N, D]
+
+        # Calculate original grid size
+        orig_size = int(patch_pos.size(1) ** 0.5)
+
+        # Reshape to 2D grid for interpolation
+        dim = patch_pos.size(-1)
+        patch_pos = patch_pos.reshape(1, orig_size, orig_size, dim).permute(0, 3, 1, 2)
+
+        # Interpolate to new size
+        patch_pos = F.interpolate(
+            patch_pos,
+            size=(h, w),
+            mode='bicubic',
+            align_corners=False
+        )
+
+        # Reshape back
+        patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(1, -1, dim)
+
+        # Concatenate class token
+        return torch.cat([cls_pos, patch_pos], dim=1)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Encode image to visual features."""
+        """Encode image to visual features.
+
+        Supports dynamic image sizes through position embedding interpolation.
+        """
         batch_size = x.size(0)
-        
+
         x = self.patch_embed(x)
-        
+        num_patches = x.size(1)
+
+        # Calculate patch grid dimensions
+        h = w = int(num_patches ** 0.5)
+
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         x = torch.cat([cls_tokens, x], dim=1)
-        
-        x = x + self.pos_embed
-        
+
+        # Use interpolated position embeddings for dynamic image sizes
+        pos_embed = self.interpolate_pos_embed(x, h, w)
+        x = x + pos_embed
+
         for block in self.blocks:
             x = block(x)
-        
+
         x = self.norm(x)
-        
+
         return x
 
 
