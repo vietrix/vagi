@@ -153,6 +153,21 @@ class AGIModel(nn.Module):
         self.context_gate_key = nn.Linear(cfg.hidden_size, cfg.hidden_size // 4)
         self.context_gate_temperature = nn.Parameter(torch.tensor(1.0))
 
+        # Scene graph projection (pre-computed to avoid dynamic layer creation)
+        scene_embed_dim = cfg.num_object_slots * cfg.object_dim
+        self.scene_projection = nn.Linear(scene_embed_dim, cfg.hidden_size)
+
+        # Learnable task embedding for metacognition (fixes gradient flow)
+        self.task_embedding_layer = nn.Sequential(
+            nn.Linear(cfg.hidden_size, cfg.metacog_task_embedding_dim),
+            nn.Tanh()
+        )
+
+        # Entity/Relation extractors for KnowledgeGraph (fixes None input crash)
+        if cfg.use_knowledge_graph:
+            self.entity_extractor = nn.Linear(cfg.hidden_size, cfg.num_entities)
+            self.relation_extractor = nn.Linear(cfg.hidden_size, cfg.num_relations)
+
         # Setup extended AGI modules
         self.setup_extended_modules()
 
@@ -436,16 +451,32 @@ class AGIModel(nn.Module):
             context_additions.append(memory_contribution)
         
         if self.cfg.use_knowledge_graph and hasattr(self, "knowledge_graph"):
+            # Extract entities and relations from hidden state if not provided
+            if entities is None and hasattr(self, "entity_extractor"):
+                # Predict entity relevance scores from hidden state
+                entity_logits = self.entity_extractor(hidden_pooled)  # [B, num_entities]
+                entities = torch.softmax(entity_logits, dim=-1)
+
+            if relations is None and hasattr(self, "relation_extractor"):
+                # Predict relation relevance scores from hidden state
+                relation_logits = self.relation_extractor(hidden_pooled)  # [B, num_relations]
+                relations = torch.softmax(relation_logits, dim=-1)
+
             if entities is not None and relations is not None:
-                kg_indices, kg_scores = self.knowledge_graph.query(entities, relations, k=5)
-                
-                kg_embeddings = self.knowledge_graph.entity_embeddings(kg_indices)
-                kg_context = (kg_embeddings * kg_scores.unsqueeze(-1)).sum(dim=1)
-                
+                # Get top-k entities for query
+                top_k = min(5, entities.size(-1))
+                entity_scores, entity_indices = entities.topk(top_k, dim=-1)
+
+                # Query knowledge graph with extracted entities
+                kg_embeddings = self.knowledge_graph.entity_embeddings(entity_indices)
+                kg_context = (kg_embeddings * entity_scores.unsqueeze(-1)).sum(dim=1)
+
                 kg_contribution = self.kg_projection(kg_context)
                 context_additions.append(kg_contribution)
-                
+
                 outputs["knowledge_context"] = kg_context
+                outputs["extracted_entities"] = entity_indices
+                outputs["extracted_relations"] = relations
         
         if self.cfg.use_abstract_reasoning:
             reasoning_outputs = self.abstract_reasoner(
@@ -464,7 +495,41 @@ class AGIModel(nn.Module):
                 
                 reasoning_contribution = self.reasoning_projection(relational_pooled)
                 context_additions.append(reasoning_contribution)
-        
+
+        # === META-LEARNING INTEGRATION ===
+        # Use meta-learning modules when enabled
+
+        if self.cfg.use_meta_learning and hasattr(self, "task_embedding"):
+            # Generate task representation from observations
+            if obs is not None:
+                # TaskEmbedding expects examples: [batch, num_examples, obs_dim]
+                # Use current obs as single "example" for task inference
+                task_examples = obs.unsqueeze(1)  # [B, 1, obs_dim]
+                task_repr = self.task_embedding(task_examples)  # [B, hidden]
+                outputs["task_representation"] = task_repr
+
+                # Few-shot learning: adapt action prediction using task context
+                if hasattr(self, "few_shot_learner"):
+                    # Combine hidden state with task representation
+                    adapted_features = hidden_pooled + task_repr * 0.5
+                    few_shot_logits = self.few_shot_learner(adapted_features)
+                    outputs["few_shot_logits"] = few_shot_logits
+
+                    # Blend with main action logits if available
+                    if "action_logits" in outputs:
+                        # Confidence-weighted blending
+                        blend_weight = 0.3  # Can be learned later
+                        outputs["action_logits"] = (
+                            outputs["action_logits"] * (1 - blend_weight) +
+                            few_shot_logits * blend_weight
+                        )
+
+        if self.cfg.use_transfer_learning and hasattr(self, "transfer_learner"):
+            # Apply transfer learning to adapt features
+            transferred_features = self.transfer_learner(hidden_pooled)
+            outputs["transferred_features"] = transferred_features
+            context_additions.append(transferred_features * 0.3)  # Weighted contribution
+
         # === NEW AGI MODULES IN FORWARD PASS ===
         
         # Scene Graph Parsing
@@ -480,22 +545,93 @@ class AGIModel(nn.Module):
                 scene_embedding = scene_graph.objects.reshape(-1).unsqueeze(0).expand(batch_size, -1)
                     
                 # Project to hidden size if needed
-                if scene_embedding.size(-1) != hidden_pooled.size(-1):
-                    if not hasattr(self, "scene_projection"):
-                        self.scene_projection = nn.Linear(
-                            scene_embedding.size(-1),
-                            hidden_pooled.size(-1)
-                        ).to(hidden_pooled.device)
-                    scene_contribution = self.scene_projection(scene_embedding)
-                else:
-                    scene_contribution = scene_embedding
+                # Use pre-defined scene_projection (moved to __init__ for efficiency)
+                scene_contribution = self.scene_projection(scene_embedding)
                 context_additions.append(scene_contribution)
         
-        # Program Synthesis Context
+        # Intrinsic Motivation - compute curiosity/novelty/empowerment rewards
+        if self.cfg.use_intrinsic_motivation and hasattr(self, "intrinsic_motivation"):
+            if obs is not None:
+                # Get predicted next state from world model if available
+                world_pred = outputs.get("world_pred")
+                if world_pred is not None:
+                    # Use action logits as soft action
+                    action_logits = outputs.get("action_logits")
+                    if action_logits is not None:
+                        action_probs = F.softmax(action_logits, dim=-1)
+
+                        # Compute intrinsic rewards
+                        intrinsic_rewards = self.intrinsic_motivation.compute_intrinsic_reward(
+                            state=obs,
+                            action=action_probs,
+                            next_state=world_pred
+                        )
+                        outputs["intrinsic_rewards"] = intrinsic_rewards
+
+                        # Add total intrinsic reward to value estimate
+                        if "total" in intrinsic_rewards and "value" in outputs:
+                            intrinsic_bonus = intrinsic_rewards["total"].unsqueeze(-1)
+                            outputs["value"] = outputs["value"] + intrinsic_bonus * 0.1
+
+                # Also compute novelty for current state (doesn't need next_state)
+                if hasattr(self.intrinsic_motivation, "novelty"):
+                    novelty_score = self.intrinsic_motivation.novelty(obs)
+                    outputs["novelty_score"] = novelty_score
+
+                # Generate exploration goals
+                if hasattr(self.intrinsic_motivation, "goal_generator"):
+                    exploration_goal = self.intrinsic_motivation.goal_generator(obs)
+                    outputs["exploration_goal"] = exploration_goal
+
+        # Program Synthesis - Actually synthesize and execute programs
         if self.cfg.use_program_synthesis and hasattr(self, "program_synthesizer"):
+            program_context = None
             if "reasoning" in outputs and "relational" in outputs["reasoning"]:
-                # Store program context for specialized tasks
-                outputs["program_context"] = outputs["reasoning"]["relational"]
+                program_context = outputs["reasoning"]["relational"]
+                outputs["program_context"] = program_context
+
+            # Attempt synthesis when we have context and low confidence
+            should_synthesize = (
+                program_context is not None and
+                mode == "inference" and
+                outputs.get("confidence", torch.tensor(1.0)).mean() < 0.7
+            )
+
+            if should_synthesize:
+                # Create pseudo-examples from context for synthesis
+                # Input: current hidden state, Output: expected action pattern
+                if obs is not None and "action_logits" in outputs:
+                    # Use hidden state as "input" and action pattern as "output"
+                    synth_input = hidden_pooled
+                    synth_output = F.softmax(outputs["action_logits"], dim=-1)
+
+                    # Create example pairs for synthesis
+                    examples = [(synth_input[i], synth_output[i]) for i in range(min(batch_size, 3))]
+
+                    try:
+                        # Synthesize program from examples
+                        synthesized_program = self.program_synthesizer.synthesize_from_examples(
+                            examples=examples,
+                            num_iterations=10  # Limited iterations for speed
+                        )
+
+                        if synthesized_program is not None:
+                            outputs["synthesized_program"] = synthesized_program
+                            outputs["program_synthesis_success"] = True
+
+                            # Execute synthesized program on hidden state
+                            try:
+                                program_output = self.program_synthesizer.dsl.execute(
+                                    synthesized_program,
+                                    hidden_pooled.mean(dim=0).tolist()  # Convert to list for DSL
+                                )
+                                outputs["program_output"] = program_output
+                            except Exception:
+                                pass  # Execution failed, keep neural output
+                        else:
+                            outputs["program_synthesis_success"] = False
+                    except Exception:
+                        outputs["program_synthesis_success"] = False
         
         # Grounded Language Understanding
         if self.cfg.use_grounded_language and hasattr(self, "grounded_language"):
@@ -521,22 +657,11 @@ class AGIModel(nn.Module):
             batch_confidences = []
 
             for i in range(batch_size):
-                # Task embedding per sample
-                if task_ids is not None and i < task_ids.size(0):
-                    task_emb = torch.randn(
-                        1,
-                        self.cfg.metacog_task_embedding_dim,
-                        device=device
-                    )
-                else:
-                    task_emb = torch.zeros(
-                        1,
-                        self.cfg.metacog_task_embedding_dim,
-                        device=device
-                    )
-
                 # Extract single sample's hidden state
                 hidden_for_metacog = hidden_pooled[i:i+1]
+
+                # Learnable task embedding from hidden state (fixes gradient flow)
+                task_emb = self.task_embedding_layer(hidden_for_metacog)
 
                 # Thought sequence for this sample
                 thought_sequence = [hidden_for_metacog]
