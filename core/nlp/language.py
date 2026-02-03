@@ -1,54 +1,124 @@
-"""Language understanding components for AGI."""
+"""Language understanding components for AGI.
+
+Enhanced with:
+1. LRU cache for efficient encoding
+2. Proper space handling in decode
+3. Complete Vietnamese Unicode coverage
+4. Better error handling for OOV tokens
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from functools import lru_cache
+from collections import OrderedDict
+import logging
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
+logger = logging.getLogger(__name__)
+
+
+class LRUCache:
+    """LRU cache for tokenization results."""
+
+    def __init__(self, maxsize: int = 10000):
+        self.maxsize = maxsize
+        self.cache: OrderedDict = OrderedDict()
+
+    def get(self, key: str) -> Optional[List[int]]:
+        if key in self.cache:
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        return None
+
+    def put(self, key: str, value: List[int]):
+        if key in self.cache:
+            self.cache.move_to_end(key)
+        else:
+            if len(self.cache) >= self.maxsize:
+                self.cache.popitem(last=False)
+            self.cache[key] = value
+
+    def clear(self):
+        self.cache.clear()
+
 
 class BytePairTokenizer:
-    """Simple BPE tokenizer for text processing."""
+    """Enhanced BPE tokenizer with caching and proper space handling.
 
-    def __init__(self, vocab_size: int = 50000) -> None:
+    Features:
+    - LRU cache for repeated encodings
+    - Proper space reconstruction in decode
+    - Complete Vietnamese Unicode coverage
+    - Explicit UNK handling with warnings
+    - Word boundary markers for better subword handling
+    """
+
+    # Special marker for word boundaries (Ġ is commonly used in GPT-style tokenizers)
+    WORD_BOUNDARY = "Ġ"
+
+    def __init__(
+        self,
+        vocab_size: int = 50000,
+        cache_size: int = 10000,
+        use_word_boundaries: bool = True,
+        unk_token: str = "<UNK>",
+    ) -> None:
         self.vocab_size = vocab_size
         self.vocab: Dict[str, int] = {}
         self.inverse_vocab: Dict[int, str] = {}
         self.merges: List[Tuple[str, str]] = []
+        self.use_word_boundaries = use_word_boundaries
+        self.unk_token = unk_token
+
+        # Cache for encoding
+        self._cache = LRUCache(cache_size)
+
+        # OOV tracking
+        self._oov_count = 0
+        self._total_tokens = 0
+
         self._build_base_vocab()
 
     def _build_base_vocab(self) -> None:
-        """Initialize with ASCII + Vietnamese characters."""
+        """Initialize with comprehensive character coverage."""
         idx = 0
 
-        # ASCII printable characters
+        # ASCII printable characters (0-255)
         for i in range(256):
             char = chr(i)
             self.vocab[char] = idx
             self.inverse_vocab[idx] = char
             idx += 1
 
-        # Vietnamese characters (diacritics)
+        # Word boundary marker
+        if self.use_word_boundaries:
+            self.vocab[self.WORD_BOUNDARY] = idx
+            self.inverse_vocab[idx] = self.WORD_BOUNDARY
+            idx += 1
+
+        # Vietnamese characters - COMPLETE coverage
         vietnamese_chars = (
-            # Lowercase vowels with diacritics
-            "àáảãạăằắẳẵặâầấẩẫậ"  # a variants
-            "èéẻẽẹêềếểễệ"        # e variants
-            "ìíỉĩị"              # i variants
-            "òóỏõọôồốổỗộơờớởỡợ"  # o variants
-            "ùúủũụưừứửữự"        # u variants
-            "ỳýỷỹỵ"              # y variants
-            "đ"                   # d with stroke
-            # Uppercase vowels with diacritics
-            "ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬ"
-            "ÈÉẺẼẸÊỀẾỂỄỆ"
-            "ÌÍỈĨỊ"
-            "ÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢ"
-            "ÙÚỦŨỤƯỪỨỬỮỰ"
-            "ỲÝỶỸỴ"
-            "Đ"
+            # Lowercase vowels with all diacritics
+            "àáảãạăằắẳẵặâầấẩẫậ"  # a variants (17)
+            "èéẻẽẹêềếểễệ"        # e variants (11)
+            "ìíỉĩị"              # i variants (5)
+            "òóỏõọôồốổỗộơờớởỡợ"  # o variants (17)
+            "ùúủũụưừứửữự"        # u variants (11)
+            "ỳýỷỹỵ"              # y variants (5)
+            "đ"                   # d with stroke (1)
+            # Uppercase vowels with all diacritics
+            "ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬ"  # A variants
+            "ÈÉẺẼẸÊỀẾỂỄỆ"        # E variants
+            "ÌÍỈĨỊ"              # I variants
+            "ÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢ"  # O variants
+            "ÙÚỦŨỤƯỪỨỬỮỰ"        # U variants
+            "ỲÝỶỸỴ"              # Y variants
+            "Đ"                   # D with stroke
         )
         for char in vietnamese_chars:
             if char not in self.vocab:
@@ -56,8 +126,21 @@ class BytePairTokenizer:
                 self.inverse_vocab[idx] = char
                 idx += 1
 
-        # Common punctuation and symbols
-        extra_chars = "–—''""…•°±×÷²³√∞≈≠≤≥πΣ"
+        # Extended Unicode punctuation and symbols
+        extra_chars = (
+            # Typography
+            "–—''""…•·"
+            # Math symbols
+            "°±×÷²³¹⁰√∞≈≠≤≥πΣ∑∏∫∂∇±∓∘∙×÷"
+            # Currency
+            "₫€£¥₹₿₽₩"
+            # Arrows
+            "←→↑↓↔↕⇒⇔"
+            # Misc
+            "©®™§¶†‡№℃℉"
+            # Combining diacritics (for edge cases)
+            "\u0300\u0301\u0302\u0303\u0304\u0306\u0309\u0323"  # grave, acute, circumflex, tilde, macron, breve, hook above, dot below
+        )
         for char in extra_chars:
             if char not in self.vocab:
                 self.vocab[char] = idx
@@ -67,12 +150,20 @@ class BytePairTokenizer:
         # Special tokens
         special_tokens = [
             "<PAD>", "<UNK>", "<BOS>", "<EOS>",
-            "<SEP>", "<CLS>", "<MASK>", "<ACT>"
+            "<SEP>", "<CLS>", "<MASK>", "<ACT>",
+            "<SPACE>", "<NEWLINE>", "<TAB>"
         ]
         for token in special_tokens:
-            self.vocab[token] = idx
-            self.inverse_vocab[idx] = token
-            idx += 1
+            if token not in self.vocab:
+                self.vocab[token] = idx
+                self.inverse_vocab[idx] = token
+                idx += 1
+
+        # Store special token IDs
+        self.pad_token_id = self.vocab.get("<PAD>", 0)
+        self.unk_token_id = self.vocab.get("<UNK>", 1)
+        self.bos_token_id = self.vocab.get("<BOS>", 2)
+        self.eos_token_id = self.vocab.get("<EOS>", 3)
 
     def train(self, texts: List[str], num_merges: int = 10000) -> None:
         """Train BPE on corpus."""
@@ -122,13 +213,62 @@ class BytePairTokenizer:
                         i += 1
                 vocab[word] = new_symbols
 
-    def encode(self, text: str, max_length: Optional[int] = None) -> List[int]:
-        """Encode text to token IDs."""
+    def encode(
+        self,
+        text: str,
+        max_length: Optional[int] = None,
+        add_special_tokens: bool = False,
+        use_cache: bool = True
+    ) -> List[int]:
+        """Encode text to token IDs with caching.
+
+        Args:
+            text: Text to encode
+            max_length: Maximum output length (truncate if exceeded)
+            add_special_tokens: Add BOS/EOS tokens
+            use_cache: Use LRU cache for repeated texts
+
+        Returns:
+            List of token IDs
+        """
+        # Check cache first
+        cache_key = f"{text}:{max_length}:{add_special_tokens}"
+        if use_cache:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        # Preprocess: add word boundaries if enabled
+        if self.use_word_boundaries:
+            # Add boundary marker before each word (after spaces)
+            processed_text = ""
+            prev_was_space = True
+            for char in text:
+                if char == " ":
+                    prev_was_space = True
+                    processed_text += char
+                else:
+                    if prev_was_space:
+                        processed_text += self.WORD_BOUNDARY + char
+                    else:
+                        processed_text += char
+                    prev_was_space = False
+            text = processed_text
+
+        # Character-level tokenization
         tokens = []
         for char in text:
-            token_id = self.vocab.get(char, self.vocab.get("<UNK>", 1))
+            token_id = self.vocab.get(char)
+            if token_id is None:
+                # OOV handling with warning
+                token_id = self.unk_token_id
+                self._oov_count += 1
+                if self._oov_count <= 10:  # Only log first 10 OOVs
+                    logger.debug(f"OOV character: {repr(char)}")
             tokens.append(token_id)
-        
+            self._total_tokens += 1
+
+        # Apply BPE merges
         for merge_pair in self.merges:
             i = 0
             new_tokens = []
@@ -138,23 +278,87 @@ class BytePairTokenizer:
                     next_tok = self.inverse_vocab.get(tokens[i + 1], "")
                     if (current, next_tok) == merge_pair:
                         merged = current + next_tok
-                        merged_id = self.vocab.get(merged, tokens[i])
-                        new_tokens.append(merged_id)
-                        i += 2
-                        continue
+                        merged_id = self.vocab.get(merged)
+                        if merged_id is not None:
+                            new_tokens.append(merged_id)
+                            i += 2
+                            continue
                 new_tokens.append(tokens[i])
                 i += 1
             tokens = new_tokens
-        
+
+        # Add special tokens
+        if add_special_tokens:
+            tokens = [self.bos_token_id] + tokens + [self.eos_token_id]
+
+        # Truncate if needed
         if max_length is not None and len(tokens) > max_length:
             tokens = tokens[:max_length]
-        
+
+        # Cache result
+        if use_cache:
+            self._cache.put(cache_key, tokens)
+
         return tokens
 
-    def decode(self, token_ids: List[int]) -> str:
-        """Decode token IDs to text."""
-        tokens = [self.inverse_vocab.get(tid, "<UNK>") for tid in token_ids]
-        return "".join(tokens)
+    def decode(
+        self,
+        token_ids: List[int],
+        skip_special_tokens: bool = True,
+        clean_up_spaces: bool = True
+    ) -> str:
+        """Decode token IDs to text with proper space handling.
+
+        Args:
+            token_ids: Token IDs to decode
+            skip_special_tokens: Skip special tokens like PAD, BOS, EOS
+            clean_up_spaces: Clean up extra spaces and word boundary markers
+
+        Returns:
+            Decoded text string
+        """
+        special_token_ids = {
+            self.pad_token_id, self.bos_token_id, self.eos_token_id,
+            self.vocab.get("<SEP>"), self.vocab.get("<CLS>"),
+            self.vocab.get("<MASK>"), self.vocab.get("<ACT>")
+        }
+
+        tokens = []
+        for tid in token_ids:
+            if skip_special_tokens and tid in special_token_ids:
+                continue
+            token = self.inverse_vocab.get(tid, self.unk_token)
+            tokens.append(token)
+
+        text = "".join(tokens)
+
+        if clean_up_spaces:
+            # Replace word boundary marker with space
+            if self.use_word_boundaries:
+                text = text.replace(self.WORD_BOUNDARY, " ")
+
+            # Clean up multiple spaces
+            while "  " in text:
+                text = text.replace("  ", " ")
+
+            # Strip leading/trailing spaces
+            text = text.strip()
+
+        return text
+
+    def get_oov_rate(self) -> float:
+        """Get OOV (out-of-vocabulary) rate."""
+        if self._total_tokens == 0:
+            return 0.0
+        return self._oov_count / self._total_tokens
+
+    def clear_cache(self):
+        """Clear the encoding cache."""
+        self._cache.clear()
+
+    def __len__(self) -> int:
+        """Return vocabulary size."""
+        return len(self.vocab)
 
     def save(self, path: str | Path) -> None:
         """Save tokenizer state."""
@@ -216,17 +420,71 @@ class TextEmbedding(nn.Module):
 
 
 class LanguageHead(nn.Module):
-    """Language modeling head with vocabulary projection."""
+    """Language modeling head with vocabulary projection and output normalization.
 
-    def __init__(self, hidden_size: int, vocab_size: int, tie_weights: bool = True) -> None:
+    Features:
+    - Optional layer norm before projection for numerical stability
+    - Weight tying support with embedding layer
+    - Temperature scaling for generation
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        vocab_size: int,
+        tie_weights: bool = True,
+        use_output_norm: bool = True
+    ) -> None:
         super().__init__()
         self.vocab_size = vocab_size
-        self.projection = nn.Linear(hidden_size, vocab_size, bias=False)
+        self.hidden_size = hidden_size
         self.tie_weights = tie_weights
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Project hidden states to vocabulary logits."""
-        return self.projection(hidden_states)
+        # Output normalization for numerical stability
+        if use_output_norm:
+            self.output_norm = nn.LayerNorm(hidden_size)
+        else:
+            self.output_norm = None
+
+        # Projection layer
+        self.projection = nn.Linear(hidden_size, vocab_size, bias=False)
+
+        # For weight tying (set by parent module)
+        self._tied_embedding = None
+
+    def tie_to_embedding(self, embedding: nn.Embedding):
+        """Tie output weights to embedding weights."""
+        if self.tie_weights:
+            self._tied_embedding = embedding
+            # Share weights
+            self.projection.weight = embedding.weight
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        temperature: float = 1.0
+    ) -> torch.Tensor:
+        """Project hidden states to vocabulary logits.
+
+        Args:
+            hidden_states: [batch, seq_len, hidden_size]
+            temperature: Temperature for logit scaling (for generation)
+
+        Returns:
+            Logits of shape [batch, seq_len, vocab_size]
+        """
+        # Apply output normalization
+        if self.output_norm is not None:
+            hidden_states = self.output_norm(hidden_states)
+
+        # Project to vocabulary
+        logits = self.projection(hidden_states)
+
+        # Apply temperature scaling
+        if temperature != 1.0:
+            logits = logits / temperature
+
+        return logits
 
 
 class NextTokenPredictor(nn.Module):

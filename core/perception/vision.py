@@ -9,27 +9,132 @@ from torch import nn
 from torch.nn import functional as F
 
 
+class ResidualBlock(nn.Module):
+    """Residual block with BatchNorm and skip connections."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        stride: int = 1,
+        downsample: Optional[nn.Module] = None
+    ) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3,
+            stride=stride, padding=1, bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=3,
+            stride=1, padding=1, bias=False
+        )
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.downsample = downsample
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward with residual connection."""
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = F.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out = out + identity
+        out = F.relu(out)
+
+        return out
+
+
 class ImageObsEncoder(nn.Module):
-    """Simple CNN encoder for image observations (backward compatibility)."""
-    
+    """ResNet-style CNN encoder for image observations with BatchNorm and skip connections."""
+
     def __init__(
         self,
         in_channels: int = 3,
         obs_dim: int = 128,
-        hidden_size: int = 256
+        hidden_size: int = 256,
+        num_blocks: Tuple[int, ...] = (2, 2, 2, 2)
     ) -> None:
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1)
-        self.conv3 = nn.Conv2d(64, hidden_size, kernel_size=3, stride=2, padding=1)
+        self.in_planes = 64
+
+        # Initial convolution
+        self.conv1 = nn.Conv2d(
+            in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(64)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # ResNet-style layers with skip connections
+        self.layer1 = self._make_layer(64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(256, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(hidden_size, num_blocks[3], stride=2)
+
+        # Global pooling and projection
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(hidden_size, obs_dim)
-    
+
+        # Initialize weights
+        self._init_weights()
+
+    def _make_layer(
+        self,
+        out_channels: int,
+        num_blocks: int,
+        stride: int = 1
+    ) -> nn.Sequential:
+        """Create a residual layer with multiple blocks."""
+        downsample = None
+        if stride != 1 or self.in_planes != out_channels:
+            downsample = nn.Sequential(
+                nn.Conv2d(
+                    self.in_planes, out_channels, kernel_size=1,
+                    stride=stride, bias=False
+                ),
+                nn.BatchNorm2d(out_channels)
+            )
+
+        layers = []
+        layers.append(ResidualBlock(self.in_planes, out_channels, stride, downsample))
+        self.in_planes = out_channels
+
+        for _ in range(1, num_blocks):
+            layers.append(ResidualBlock(out_channels, out_channels))
+
+        return nn.Sequential(*layers)
+
+    def _init_weights(self) -> None:
+        """Initialize weights using Kaiming initialization."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Encode image to observation vector."""
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
+        """Encode image to observation vector with residual connections."""
+        # Initial convolution
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.maxpool(x)
+
+        # Residual layers with skip connections
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        # Global pooling and projection
         x = self.pool(x)
         x = x.flatten(1)
         x = self.fc(x)
@@ -37,7 +142,7 @@ class ImageObsEncoder(nn.Module):
 
 
 class PatchEmbedding(nn.Module):
-    """Convert image to patch embeddings."""
+    """Convert image to patch embeddings with learnable CLS token for global representation."""
 
     def __init__(
         self,
@@ -45,12 +150,15 @@ class PatchEmbedding(nn.Module):
         patch_size: int = 16,
         in_channels: int = 3,
         embed_dim: int = 768,
+        use_cls_token: bool = True,
     ) -> None:
         super().__init__()
         self.image_size = image_size
         self.patch_size = patch_size
         self.num_patches = (image_size // patch_size) ** 2
-        
+        self.embed_dim = embed_dim
+        self.use_cls_token = use_cls_token
+
         self.projection = nn.Conv2d(
             in_channels,
             embed_dim,
@@ -58,11 +166,51 @@ class PatchEmbedding(nn.Module):
             stride=patch_size
         )
 
+        # Learnable CLS token for global representation
+        if use_cls_token:
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+            nn.init.trunc_normal_(self.cls_token, std=0.02)
+
+        # Learnable position embeddings including CLS position
+        num_positions = self.num_patches + 1 if use_cls_token else self.num_patches
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_positions, embed_dim))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Convert image to patch embeddings."""
+        """Convert image to patch embeddings with optional CLS token.
+
+        Returns:
+            If use_cls_token=True: [B, num_patches + 1, embed_dim] with CLS token at position 0
+            If use_cls_token=False: [B, num_patches, embed_dim]
+        """
+        batch_size = x.size(0)
+
+        # Project patches
         x = self.projection(x)
-        x = x.flatten(2).transpose(1, 2)
+        x = x.flatten(2).transpose(1, 2)  # [B, num_patches, embed_dim]
+
+        # Prepend learnable CLS token for global representation
+        if self.use_cls_token:
+            cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+            x = torch.cat([cls_tokens, x], dim=1)  # [B, num_patches + 1, embed_dim]
+
+        # Add position embeddings
+        x = x + self.pos_embed
+
         return x
+
+    def get_cls_token(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract the CLS token representing global image features.
+
+        Args:
+            x: Output from forward() with shape [B, num_patches + 1, embed_dim]
+
+        Returns:
+            CLS token with shape [B, embed_dim]
+        """
+        if not self.use_cls_token:
+            raise ValueError("CLS token not available when use_cls_token=False")
+        return x[:, 0]
 
 
 class VisionTransformerBlock(nn.Module):

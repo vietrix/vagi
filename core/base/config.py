@@ -48,7 +48,14 @@ class VAGIConfig:
     memory_decay: float = 1.0
     memory_protect: bool = False
     memory_consolidate_every: int = 0
+    # Gumbel-softmax erase gate settings (Issue 2.4)
+    memory_erase_temperature: float = 1.0
+    memory_erase_hard: bool = False
     use_special_tokens: bool = True
+    # Per-layer gradient checkpointing config (Issue 2.12)
+    # If None, use_grad_checkpoint applies to all layers
+    # If list, specifies which layer indices to checkpoint
+    grad_checkpoint_layers: tuple = None
 
     def __post_init__(self) -> None:
         if self.use_confidence and not self.use_uncertainty:
