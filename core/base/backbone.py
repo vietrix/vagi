@@ -16,24 +16,54 @@ from .utils import check_floating, check_shape, StageTimer
 
 
 class ObsTokenizer(nn.Module):
-    """Project observations into a fixed number of tokens."""
+    """Project observations into a fixed number of tokens with learnable positional encoding."""
 
     def __init__(self, obs_dim: int, obs_tokens: int, hidden_size: int) -> None:
         super().__init__()
         self.obs_tokens = obs_tokens
         self.hidden_size = hidden_size
         self.proj = nn.Linear(obs_dim, obs_tokens * hidden_size)
+        # Learnable positional encoding for obs tokens (Issue 2.3)
+        self.obs_pos_embed = nn.Parameter(torch.zeros(1, obs_tokens, hidden_size))
+        nn.init.normal_(self.obs_pos_embed, std=0.02)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         check_shape(obs, (None, None), "obs")
         check_floating(obs, "obs")
         bsz = obs.shape[0]
         projected = self.proj(obs)
-        return projected.view(bsz, self.obs_tokens, self.hidden_size)
+        tokens = projected.view(bsz, self.obs_tokens, self.hidden_size)
+        # Add learnable positional encoding
+        tokens = tokens + self.obs_pos_embed
+        return tokens
+
+
+def gumbel_softmax_binary(logits: torch.Tensor, temperature: float = 1.0, hard: bool = False) -> torch.Tensor:
+    """Gumbel-softmax for differentiable binary decisions (Issue 2.4).
+
+    Args:
+        logits: Input logits of shape (...,)
+        temperature: Gumbel temperature. Lower = harder decisions
+        hard: If True, use straight-through estimator for hard decisions
+
+    Returns:
+        Soft or hard binary decisions in [0, 1]
+    """
+    if temperature <= 0:
+        temperature = 1e-6
+    # Sample Gumbel noise
+    gumbel_noise = -torch.log(-torch.log(torch.rand_like(logits).clamp(min=1e-10) + 1e-10) + 1e-10)
+    # Soft sample
+    y_soft = torch.sigmoid((logits + gumbel_noise) / temperature)
+    if hard:
+        # Straight-through estimator: hard in forward, soft in backward
+        y_hard = (y_soft > 0.5).float()
+        return y_hard - y_soft.detach() + y_soft
+    return y_soft
 
 
 class FastMemory(nn.Module):
-    """Fast memory update module with gated writes and stabilization."""
+    """Fast memory update module with gated writes, Gumbel-softmax erase gates, and stabilization."""
 
     def __init__(
         self,
@@ -43,11 +73,18 @@ class FastMemory(nn.Module):
         decay: float,
         protect: bool,
         consolidate_every: int,
+        erase_temperature: float = 1.0,
+        erase_hard: bool = False,
     ) -> None:
         super().__init__()
         self.memory_slots = memory_slots
         self.decay = decay
         self.consolidate_every = consolidate_every
+        # Gumbel-softmax temperature for erase gates (Issue 2.4)
+        self.erase_temperature = erase_temperature
+        self.erase_hard = erase_hard
+        # Round-robin consolidation slot tracking (Issue 2.5)
+        self.register_buffer("consolidate_slot_idx", torch.tensor(0, dtype=torch.long))
         self.query = nn.Linear(hidden_size, hidden_size, bias=False)
         self.key = nn.Linear(hidden_size, hidden_size, bias=False)
         self.value = nn.Linear(hidden_size, hidden_size, bias=False)
@@ -56,8 +93,24 @@ class FastMemory(nn.Module):
         self.protect = nn.Linear(hidden_size, 1) if protect else None
         self.consolidate_proj = nn.Linear(hidden_size, hidden_size) if consolidate_every > 0 else None
         self.consolidate_gate = nn.Linear(hidden_size, 1) if consolidate_every > 0 else None
+        # Importance weighting for slot selection (Issue 2.5)
+        self.slot_importance = nn.Linear(hidden_size, 1) if consolidate_every > 0 else None
 
-    def forward(self, mem: torch.Tensor, h_last: torch.Tensor, timestep: Optional[int] = None) -> torch.Tensor:
+    def set_erase_temperature(self, temperature: float) -> None:
+        """Set Gumbel-softmax temperature for erase gates (for annealing during training)."""
+        self.erase_temperature = max(1e-6, temperature)
+
+    def set_erase_hard(self, hard: bool) -> None:
+        """Set whether to use hard binary decisions for erase gates."""
+        self.erase_hard = hard
+
+    def forward(
+        self,
+        mem: torch.Tensor,
+        h_last: torch.Tensor,
+        timestep: Optional[int] = None,
+        erase_temperature: Optional[float] = None,
+    ) -> torch.Tensor:
         check_shape(mem, (None, self.memory_slots, None), "mem")
         if self.memory_slots == 0:
             return mem
@@ -73,7 +126,10 @@ class FastMemory(nn.Module):
         attn_weights = torch.softmax(attn_scores, dim=-1)  # (B, M)
 
         write = self.write(h_last)  # (B, D)
-        erase = torch.sigmoid(self.erase(h_last))  # (B, M)
+        # Use Gumbel-softmax for differentiable binary erase decisions (Issue 2.4)
+        erase_logits = self.erase(h_last)  # (B, M)
+        temp = erase_temperature if erase_temperature is not None else self.erase_temperature
+        erase = gumbel_softmax_binary(erase_logits, temperature=temp, hard=self.erase_hard)
 
         write_update = attn_weights.unsqueeze(-1) * write.unsqueeze(1)
         erase_mask = erase.unsqueeze(-1) * attn_weights.unsqueeze(-1)
@@ -85,13 +141,40 @@ class FastMemory(nn.Module):
         _ = (attn_weights.unsqueeze(-1) * v).sum(dim=1)
         if self.consolidate_every > 0 and timestep is not None:
             if (timestep + 1) % self.consolidate_every == 0:
-                if self.consolidate_proj is None or self.consolidate_gate is None:
-                    raise ValueError("consolidation modules not initialized")
-                summary = mem.mean(dim=1, keepdim=True)
-                gate = torch.sigmoid(self.consolidate_gate(summary))
-                compressed = self.consolidate_proj(summary)
-                mem = mem * (1.0 - gate)
-                mem[:, :1, :] = mem[:, :1, :] + gate * compressed
+                mem = self._consolidate(mem)
+        return mem
+
+    def _consolidate(self, mem: torch.Tensor) -> torch.Tensor:
+        """Consolidate memory with round-robin or importance-weighted slot assignment (Issue 2.5)."""
+        if self.consolidate_proj is None or self.consolidate_gate is None:
+            raise ValueError("consolidation modules not initialized")
+
+        summary = mem.mean(dim=1, keepdim=True)
+        gate = torch.sigmoid(self.consolidate_gate(summary))
+        compressed = self.consolidate_proj(summary)
+
+        # Determine target slot using importance weighting or round-robin
+        if self.slot_importance is not None:
+            # Importance-weighted slot selection: pick slot with lowest importance
+            importance_scores = self.slot_importance(mem).squeeze(-1)  # (B, M)
+            # Add small noise for tie-breaking
+            importance_scores = importance_scores + torch.randn_like(importance_scores) * 0.01
+            # Select slot with minimum importance (least important to overwrite)
+            target_slot = torch.argmin(importance_scores, dim=-1)  # (B,)
+        else:
+            # Round-robin slot assignment
+            target_slot = self.consolidate_slot_idx.expand(mem.shape[0])
+            # Update round-robin counter (only during training)
+            if self.training:
+                self.consolidate_slot_idx = (self.consolidate_slot_idx + 1) % self.memory_slots
+
+        # Apply consolidation to selected slots
+        mem = mem * (1.0 - gate)
+        batch_size = mem.shape[0]
+        for b in range(batch_size):
+            slot_idx = target_slot[b].item() if target_slot.dim() > 0 else int(target_slot.item())
+            mem[b, slot_idx:slot_idx+1, :] = mem[b, slot_idx:slot_idx+1, :] + gate[b] * compressed[b]
+
         return mem
 
 
@@ -259,6 +342,8 @@ class CausalTransformerBackbone(nn.Module):
                 decay=cfg.memory_decay,
                 protect=cfg.memory_protect,
                 consolidate_every=cfg.memory_consolidate_every,
+                erase_temperature=cfg.memory_erase_temperature,
+                erase_hard=cfg.memory_erase_hard,
             )
             if cfg.memory_slots > 0
             else None
@@ -299,6 +384,23 @@ class CausalTransformerBackbone(nn.Module):
             return 0
         return int(kv.keys[0].shape[2])
 
+    def _should_checkpoint_layer(self, layer_idx: int) -> bool:
+        """Determine if a specific layer should use gradient checkpointing (Issue 2.12).
+
+        Args:
+            layer_idx: Index of the transformer layer
+
+        Returns:
+            True if gradient checkpointing should be used for this layer
+        """
+        if not self.cfg.use_grad_checkpoint:
+            return False
+        # If grad_checkpoint_layers is specified, only checkpoint those layers
+        if self.cfg.grad_checkpoint_layers is not None:
+            return layer_idx in self.cfg.grad_checkpoint_layers
+        # Otherwise checkpoint all layers
+        return True
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -333,9 +435,11 @@ class CausalTransformerBackbone(nn.Module):
 
         with timer.track("attn") if timer else nullcontext():
             x = self._add_positions(x, start_pos=0)
-            for block in self.blocks:
-                if self.cfg.use_grad_checkpoint and self.training:
-                    x = checkpoint(block, x)
+            for idx, block in enumerate(self.blocks):
+                # Per-layer gradient checkpointing (Issue 2.12)
+                use_checkpoint = self._should_checkpoint_layer(idx)
+                if use_checkpoint and self.training:
+                    x = checkpoint(block, x, use_reentrant=False)
                 else:
                     x = block(x)
 

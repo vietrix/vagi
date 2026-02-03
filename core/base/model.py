@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 from torch import nn
@@ -21,11 +21,13 @@ from .heads import (
     WorldHead,
 )
 from ..training.losses import (
+    action_validity_loss,
     budget_loss,
     imagination_consistency_loss,
     language_loss,
     policy_loss,
     reflection_loss,
+    temporal_consistency_loss,
     total_loss,
     value_loss,
     world_loss,
@@ -149,8 +151,15 @@ class VAGICore(nn.Module):
 
         text_logits = self.lang(x)
         h_policy = h_act if h_act is not None else h_last
-        action_logits = self.pi(h_policy)
+        action_logits_raw = self.pi(h_policy)
         action_valid = torch.sigmoid(self.action_valid(h_policy)) if self.action_valid is not None else None
+        # Apply action validity masking to action logits (Issue 2.6)
+        # This ensures invalid actions get very low probability during both training and inference
+        action_logits, action_valid_mask = self._apply_action_validity(
+            action_logits_raw,
+            action_valid,
+            threshold=self.cfg.action_validity_threshold,
+        )
         if timer:
             with timer.track("value"):
                 value = self.v(h_policy)
@@ -192,7 +201,9 @@ class VAGICore(nn.Module):
         outputs: Dict[str, Any] = {
             "text_logits": text_logits,
             "action_logits": action_logits,
+            "action_logits_raw": action_logits_raw,  # Unmasked logits for training (Issue 2.6)
             "action_valid": action_valid,
+            "action_valid_mask": action_valid_mask,  # Binary mask of valid actions (Issue 2.6)
             "value": value,
             "value_logvar": value_logvar,
             "world_pred": world_pred,
@@ -244,6 +255,26 @@ class VAGICore(nn.Module):
                         world_logvar,
                         max_delta=max_delta,
                     )
+                # Add temporal consistency loss for world model (Issue 2.11)
+                if targets.get("temporal_consistency") or "temporal_consistency" in (targets.get("loss_weights") or {}):
+                    tc_max_delta = float(targets.get("temporal_consistency_max_delta", 1.0))
+                    tc_smoothness = float(targets.get("temporal_consistency_smoothness", 0.1))
+                    losses["temporal_consistency"] = temporal_consistency_loss(
+                        world_pred,
+                        world_logvar,
+                        max_delta=tc_max_delta,
+                        smoothness_weight=tc_smoothness,
+                    )
+            # Action validity loss (Issue 2.6)
+            if action_valid is not None and "action_valid" in targets:
+                losses.update(
+                    action_validity_loss(
+                        action_valid,
+                        targets["action_valid"],
+                        action_mask=targets.get("action_mask"),
+                    )
+                )
+            # Reflection losses for error type and info gain (Issue 2.7)
             reflection = reflection_loss(
                 error_logits,
                 targets.get("error_types") if targets else None,
@@ -371,23 +402,54 @@ class VAGICore(nn.Module):
         state: RecurrentState,
         task_ids: Optional[torch.Tensor] = None,
         image: Optional[torch.Tensor] = None,
+        exploration_weight: float = 0.0,
+        query_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Fast policy-only action selection."""
+        """Fast policy-only action selection with optional active learning (Issue 2.8).
+
+        Args:
+            input_ids: Token IDs
+            obs: Observation vector
+            state: Recurrent state
+            task_ids: Optional task IDs
+            image: Optional image input
+            exploration_weight: Info gain exploration bonus weight (0 = greedy)
+            query_threshold: If set, return needs_query=True when info_gain exceeds this
+
+        Returns:
+            Action selection result with optional query flag for active learning
+        """
         out = self.step(input_ids=input_ids, obs=obs, state=state, task_ids=task_ids, image=image)
         action_logits = out["action_logits"]
         action_valid = out.get("action_valid")
+        info_gain = out.get("info_gain")
+
+        # Apply info gain exploration bonus (Issue 2.8)
+        if exploration_weight > 0.0 and info_gain is not None and self.info_head is not None:
+            action_logits = self.info_head.exploration_bonus(
+                action_logits, info_gain, weight=exploration_weight
+            )
+
         action_logits, _mask = self._apply_action_validity(
             action_logits,
             action_valid,
             threshold=self.cfg.action_validity_threshold,
         )
         action = torch.argmax(action_logits, dim=-1)
+
+        # Active learning query detection (Issue 2.8)
+        needs_query = False
+        if query_threshold is not None and info_gain is not None:
+            needs_query = bool((info_gain.squeeze(-1) > query_threshold).any().item())
+
         return {
             "action": action,
             "mode": "act",
             "confidence": out.get("confidence"),
             "uncertainty": out.get("uncertainty"),
             "budget": out.get("budget"),
+            "info_gain": info_gain,
+            "needs_query": needs_query,  # Active learning flag (Issue 2.8)
             "stopReason": "done",
             "outputs": out,
         }

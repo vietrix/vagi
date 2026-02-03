@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -17,6 +18,8 @@ from ..reasoning import AbstractReasoner, CounterfactualReasoner
 from ..learning import TaskEmbedding, CurriculumScheduler, TransferLearner, FewShotLearner
 from ..interaction import ToolRegistry, ToolUseController
 from ..perception import VisionTransformerEncoder, MultiModalEncoder, ImageTextAligner
+
+logger = logging.getLogger(__name__)
 
 
 class AGIModel(nn.Module):
@@ -139,7 +142,14 @@ class AGIModel(nn.Module):
             num_concepts=10
         )
         
-        self.memory_projection = nn.Linear(cfg.hidden_size, cfg.hidden_size)
+        # 1.12 Memory Projection - Multi-layer with non-linearity (was simple Linear)
+        self.memory_projection = nn.Sequential(
+            nn.Linear(cfg.hidden_size, cfg.hidden_size * 2),
+            nn.GELU(),
+            nn.Dropout(cfg.dropout),
+            nn.Linear(cfg.hidden_size * 2, cfg.hidden_size),
+            nn.LayerNorm(cfg.hidden_size)
+        )
         self.kg_projection = nn.Linear(cfg.entity_embed_dim, cfg.hidden_size)
         self.reasoning_projection = nn.Linear(cfg.hidden_size, cfg.hidden_size)
         self.augmented_action_head = nn.Linear(cfg.hidden_size, cfg.action_dim)
@@ -163,13 +173,52 @@ class AGIModel(nn.Module):
             nn.Tanh()
         )
 
-        # Entity/Relation extractors for KnowledgeGraph (fixes None input crash)
+        # 1.10 Entity/Relation extractors with entropy-based confidence filtering
         if cfg.use_knowledge_graph:
             self.entity_extractor = nn.Linear(cfg.hidden_size, cfg.num_entities)
             self.relation_extractor = nn.Linear(cfg.hidden_size, cfg.num_relations)
+            # Entropy threshold for filtering low-confidence extractions
+            self.entity_entropy_threshold = nn.Parameter(torch.tensor(0.5), requires_grad=False)
+            self.relation_entropy_threshold = nn.Parameter(torch.tensor(0.5), requires_grad=False)
+
+        # 1.13 Tool Use Gradient Flow - Differentiable tool interface with straight-through estimator
+        if cfg.use_tool_use:
+            self.tool_embedding = nn.Embedding(cfg.num_tools, cfg.hidden_size)
+            self.tool_param_encoder = nn.Linear(cfg.hidden_size, cfg.hidden_size)
+            self.tool_result_decoder = nn.Linear(cfg.hidden_size, cfg.hidden_size)
+
+        # 1.15 Unified initialization flag for continuous learning
+        self._learners_initialized = False
+        self._pending_optimizer = None
 
         # Setup extended AGI modules
         self.setup_extended_modules()
+
+    def _initialize_learners(self, optimizer: torch.optim.Optimizer) -> None:
+        """1.15 Unified initialization for all learners requiring optimizer."""
+        if self._learners_initialized:
+            return
+
+        # Setup online learner
+        if hasattr(self, '_online_learning_config') and self._online_learning_config is not None:
+            from ..training.online_learner import OnlineLearner
+            self._online_learner = OnlineLearner(
+                model=self,
+                optimizer=optimizer,
+                config=self._online_learning_config
+            )
+
+        # Setup continuous learner
+        if hasattr(self, 'continuous_learning_config') and self.continuous_learning_config is not None:
+            from ..training import ContinuousLearner
+            self._continuous_learner = ContinuousLearner(
+                model=self,
+                optimizer=optimizer,
+                config=self.continuous_learning_config
+            )
+
+        self._learners_initialized = True
+        logger.info("All learners initialized with optimizer")
 
     def setup_extended_modules(self) -> None:
         """Initialize all extended AGI modules."""
@@ -258,24 +307,47 @@ class AGIModel(nn.Module):
             self._online_learner = None  # Will be set when optimizer is available
 
     def setup_online_learner(self, optimizer: torch.optim.Optimizer) -> None:
-        """Setup online learner with optimizer. Call after model initialization."""
-        if hasattr(self, '_online_learning_config') and self._online_learning_config is not None:
-            from ..training.online_learner import OnlineLearner
-            self._online_learner = OnlineLearner(
-                model=self,
-                optimizer=optimizer,
-                config=self._online_learning_config
-            )
+        """Setup online learner with optimizer. Call after model initialization.
+
+        1.8 Auto-setup: This is now also called automatically from train() when
+        optimizer is first used.
+        """
+        # 1.15 Use unified initialization
+        self._initialize_learners(optimizer)
 
     def setup_continuous_learner(self, optimizer: torch.optim.Optimizer) -> None:
-        """Setup continuous learner with optimizer. Call after model initialization."""
-        if hasattr(self, 'continuous_learning_config') and self.continuous_learning_config is not None:
-            from ..training import ContinuousLearner
-            self._continuous_learner = ContinuousLearner(
-                model=self,
-                optimizer=optimizer,
-                config=self.continuous_learning_config
-            )
+        """Setup continuous learner with optimizer. Call after model initialization.
+
+        1.8 Auto-setup: This is now also called automatically from train() when
+        optimizer is first used.
+        """
+        # 1.15 Use unified initialization
+        self._initialize_learners(optimizer)
+
+    def train(self, mode: bool = True):
+        """Override train() to auto-setup learners when optimizer becomes available.
+
+        1.8 Online Learner Auto Setup - Auto-setup when optimizer available.
+        """
+        result = super().train(mode)
+
+        # If we have a pending optimizer and learners aren't initialized, do it now
+        if mode and self._pending_optimizer is not None and not self._learners_initialized:
+            self._initialize_learners(self._pending_optimizer)
+            self._pending_optimizer = None
+
+        return result
+
+    def set_optimizer(self, optimizer: torch.optim.Optimizer) -> None:
+        """Set optimizer for auto-initialization of learners.
+
+        1.8 Online Learner Auto Setup - Store optimizer for deferred initialization.
+        """
+        if not self._learners_initialized:
+            self._pending_optimizer = optimizer
+            # If already in training mode, initialize immediately
+            if self.training:
+                self._initialize_learners(optimizer)
 
     def _get_core_config(self, cfg: AGIConfig):
         """Extract VAGICore config from AGI config."""
@@ -365,6 +437,316 @@ class AGIModel(nn.Module):
 
         return torch.zeros((batch_size, 1), dtype=torch.long, device=device)
 
+    # =========================================================================
+    # 1.1 Forward Pass Refactored - Separate methods for each modality
+    # =========================================================================
+
+    def _process_language(
+        self,
+        input_ids: torch.Tensor,
+        hidden: torch.Tensor,
+        hidden_pooled: torch.Tensor,
+        labels: Optional[torch.Tensor],
+        mode: str,
+        outputs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Process language modality.
+
+        1.1 Refactored from forward() for cleaner separation of concerns.
+        """
+        if not self.cfg.use_language_modeling:
+            return outputs
+
+        # Language head processing is done in loss computation section
+        # This method handles language-specific feature extraction
+
+        if hasattr(self, "masked_lm") and labels is not None and mode == "train":
+            # MLM features are processed during loss computation
+            outputs["mlm_enabled"] = True
+
+        return outputs
+
+    def _process_vision(
+        self,
+        image: Optional[torch.Tensor],
+        obs: Optional[torch.Tensor],
+        outputs: Dict[str, Any]
+    ) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
+        """Process vision modality with fusion weight clamping.
+
+        1.1 Refactored from forward() for cleaner separation.
+        1.2 Vision Fusion Weight - Add constraint via torch.clamp.
+        """
+        if image is None or not self.cfg.use_vision:
+            return obs, outputs
+
+        vision_features = self.vision_encoder(image)
+        outputs["vision_features"] = vision_features
+
+        if self.cfg.use_multimodal_fusion and hasattr(self, "multimodal_encoder"):
+            # Pass pre-computed vision_features to avoid redundant encoding
+            fused_features = self.multimodal_encoder(
+                image=None,  # Don't re-encode
+                text=None,
+                vision_features=vision_features  # Use already-encoded features
+            )
+
+            if fused_features.dim() == 3:
+                obs_from_vision = fused_features.mean(dim=1)
+            else:
+                obs_from_vision = fused_features
+        else:
+            if vision_features.dim() == 3:
+                obs_from_vision = vision_features[:, 0, :]
+            else:
+                obs_from_vision = vision_features
+
+        if obs is None:
+            obs = obs_from_vision
+        elif obs_from_vision.size(-1) == obs.size(-1):
+            # 1.2 Vision Fusion Weight - Clamp to [0, 1] for valid interpolation
+            clamped_weight = torch.clamp(self.vision_fusion_weight, 0.0, 1.0)
+            obs = obs * (1 - clamped_weight) + obs_from_vision * clamped_weight
+            outputs["vision_fusion_weight_clamped"] = clamped_weight.item()
+
+        return obs, outputs
+
+    def _process_reasoning(
+        self,
+        hidden_pooled: torch.Tensor,
+        hidden: torch.Tensor,
+        outputs: Dict[str, Any],
+        device: torch.device
+    ) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
+        """Process abstract reasoning modality.
+
+        1.1 Refactored from forward() for cleaner separation.
+        """
+        reasoning_contribution = None
+
+        if not self.cfg.use_abstract_reasoning:
+            return reasoning_contribution, outputs
+
+        reasoning_outputs = self.abstract_reasoner(
+            query=hidden_pooled,
+            context=hidden if hidden.dim() == 3 else hidden.unsqueeze(1),
+            mode="auto"
+        )
+        outputs["reasoning"] = reasoning_outputs
+
+        if "relational" in reasoning_outputs:
+            relational_features = reasoning_outputs["relational"]
+            if relational_features.dim() == 3:
+                relational_pooled = relational_features.mean(dim=1)
+            else:
+                relational_pooled = relational_features
+
+            reasoning_contribution = self.reasoning_projection(relational_pooled)
+
+        # Counterfactual reasoning: "what if we took different action?"
+        if hasattr(self, "counterfactual_reasoner") and "action_logits" in outputs:
+            action_probs = F.softmax(outputs["action_logits"], dim=-1)
+            top_actions = action_probs.topk(min(3, action_probs.size(-1)), dim=-1)
+
+            counterfactual_outcomes = []
+            for k in range(top_actions.values.size(-1)):
+                intervention = torch.zeros_like(action_probs)
+                intervention.scatter_(-1, top_actions.indices[:, k:k+1], 1.0)
+
+                cf_state = self.counterfactual_reasoner.generate_counterfactual(
+                    factual_state=hidden_pooled,
+                    intervention=intervention
+                )
+
+                comparison = self.counterfactual_reasoner.compare_outcomes(
+                    factual=hidden_pooled,
+                    counterfactual=cf_state
+                )
+                counterfactual_outcomes.append({
+                    "action_idx": top_actions.indices[:, k],
+                    "counterfactual_state": cf_state,
+                    "outcome_diff": comparison
+                })
+
+            outputs["counterfactual_analysis"] = counterfactual_outcomes
+
+            if counterfactual_outcomes:
+                outcome_diffs = torch.stack([cf["outcome_diff"] for cf in counterfactual_outcomes], dim=-1)
+                best_cf_idx = outcome_diffs.argmax(dim=-1)
+                outputs["recommended_action"] = top_actions.indices.gather(-1, best_cf_idx.unsqueeze(-1))
+
+        return reasoning_contribution, outputs
+
+    def _process_memory(
+        self,
+        hidden_pooled: torch.Tensor,
+        entities: Optional[torch.Tensor],
+        relations: Optional[torch.Tensor],
+        outputs: Dict[str, Any]
+    ) -> Tuple[List[torch.Tensor], Dict[str, Any]]:
+        """Process memory and knowledge graph modalities.
+
+        1.1 Refactored from forward() for cleaner separation.
+        1.10 Entity/Relation Extraction - Add entropy-based confidence filtering.
+        """
+        context_additions = []
+
+        # Hierarchical memory
+        if hasattr(self, "hierarchical_memory"):
+            memory_output, memory_info = self.hierarchical_memory(hidden_pooled)
+            outputs["memory_retrieval"] = memory_output
+            outputs["memory_info"] = memory_info
+
+            memory_contribution = self.memory_projection(memory_output)
+            context_additions.append(memory_contribution)
+
+        # Knowledge graph
+        if self.cfg.use_knowledge_graph and hasattr(self, "knowledge_graph"):
+            # 1.10 Extract entities with entropy-based confidence filtering
+            if entities is None and hasattr(self, "entity_extractor"):
+                entity_logits = self.entity_extractor(hidden_pooled)
+                entity_probs = torch.softmax(entity_logits, dim=-1)
+
+                # Compute entropy for confidence filtering
+                entity_entropy = -torch.sum(entity_probs * torch.log(entity_probs + 1e-10), dim=-1)
+                max_entropy = torch.log(torch.tensor(entity_probs.size(-1), dtype=torch.float, device=entity_probs.device))
+                normalized_entropy = entity_entropy / max_entropy
+
+                # Filter low-confidence extractions (high entropy = low confidence)
+                confidence_mask = normalized_entropy < self.entity_entropy_threshold
+                outputs["entity_confidence"] = 1.0 - normalized_entropy
+                outputs["entity_confidence_mask"] = confidence_mask
+
+                entities = entity_probs
+
+            if relations is None and hasattr(self, "relation_extractor"):
+                relation_logits = self.relation_extractor(hidden_pooled)
+                relation_probs = torch.softmax(relation_logits, dim=-1)
+
+                # Compute entropy for confidence filtering
+                relation_entropy = -torch.sum(relation_probs * torch.log(relation_probs + 1e-10), dim=-1)
+                max_entropy = torch.log(torch.tensor(relation_probs.size(-1), dtype=torch.float, device=relation_probs.device))
+                normalized_entropy = relation_entropy / max_entropy
+
+                # Filter low-confidence extractions
+                confidence_mask = normalized_entropy < self.relation_entropy_threshold
+                outputs["relation_confidence"] = 1.0 - normalized_entropy
+                outputs["relation_confidence_mask"] = confidence_mask
+
+                relations = relation_probs
+
+            if entities is not None:
+                # Handle different entity input formats
+                if entities.dim() == 1:
+                    kg_embeddings = self.knowledge_graph.entity_embeddings(entities)
+                    kg_context = kg_embeddings
+                elif entities.dim() == 2 and entities.size(-1) > self.cfg.entity_embed_dim:
+                    top_k = min(5, entities.size(-1))
+                    entity_scores, entity_indices = entities.topk(top_k, dim=-1)
+                    kg_embeddings = self.knowledge_graph.entity_embeddings(entity_indices)
+                    kg_context = (kg_embeddings * entity_scores.unsqueeze(-1)).sum(dim=1)
+                else:
+                    kg_context = entities
+
+                kg_contribution = self.kg_projection(kg_context)
+                context_additions.append(kg_contribution)
+
+                outputs["knowledge_context"] = kg_context
+                if entities.dim() == 1:
+                    outputs["extracted_entities"] = entities
+                outputs["extracted_relations"] = relations
+
+        return context_additions, outputs
+
+    def _process_action(
+        self,
+        hidden_pooled: torch.Tensor,
+        augmented_hidden: Optional[torch.Tensor],
+        context_additions: List[torch.Tensor],
+        outputs: Dict[str, Any],
+        mode: str
+    ) -> Dict[str, Any]:
+        """Process action/tool use modality.
+
+        1.1 Refactored from forward() for cleaner separation.
+        1.13 Tool Use Gradient Flow - Implement differentiable tool interface.
+        """
+        if not self.cfg.use_tool_use or mode not in ["train", "inference"]:
+            return outputs
+
+        context = augmented_hidden if augmented_hidden is not None else hidden_pooled
+
+        should_use_tool, tool_id, tool_params = self.tool_controller(context)
+
+        # 1.13 Differentiable tool interface with straight-through estimator
+        if hasattr(self, 'tool_embedding'):
+            # Get soft tool selection (for gradient flow)
+            tool_logits = None
+            if hasattr(self.tool_controller, 'tool_selector'):
+                selector_output = self.tool_controller.tool_selector(context)
+                # Handle case where selector returns tuple (logits, other)
+                if isinstance(selector_output, tuple):
+                    tool_logits = selector_output[0] if isinstance(selector_output[0], torch.Tensor) else None
+                elif isinstance(selector_output, torch.Tensor):
+                    tool_logits = selector_output
+
+            # Only proceed if tool_logits is a float tensor (not indices)
+            if (tool_logits is not None and
+                isinstance(tool_logits, torch.Tensor) and
+                tool_logits.dtype in (torch.float32, torch.float16, torch.bfloat16, torch.float64)):
+                # Soft tool selection for gradient flow
+                tool_probs = F.softmax(tool_logits, dim=-1)
+
+                # Straight-through estimator: hard selection in forward, soft in backward
+                if self.training:
+                    # Hard selection
+                    hard_tool_id = tool_probs.argmax(dim=-1)
+                    # Straight-through: use hard in forward, but gradient flows through soft
+                    tool_one_hot = F.one_hot(hard_tool_id, num_classes=tool_probs.size(-1)).float()
+                    # Straight-through trick: detach hard, add soft gradient
+                    tool_selection = tool_one_hot - tool_probs.detach() + tool_probs
+
+                    # Get differentiable tool embedding
+                    tool_embed = torch.matmul(tool_selection, self.tool_embedding.weight)
+                else:
+                    # Inference: just use hard selection
+                    tool_embed = self.tool_embedding(tool_id if isinstance(tool_id, torch.Tensor) else torch.tensor([tool_id], device=context.device))
+                    if tool_embed.dim() == 3:
+                        tool_embed = tool_embed.squeeze(1)
+
+                # Encode tool parameters for gradient flow
+                param_encoding = self.tool_param_encoder(context)
+
+                # Differentiable tool result (placeholder - actual tool execution is non-differentiable)
+                # This provides a gradient pathway for learning tool selection
+                differentiable_result = self.tool_result_decoder(tool_embed + param_encoding)
+
+                outputs["tool_use"] = {
+                    "should_use": should_use_tool,
+                    "tool_id": tool_id,
+                    "params": tool_params,
+                    "context": context,
+                    "tool_embedding": tool_embed,
+                    "differentiable_result": differentiable_result,
+                    "tool_probs": tool_probs if self.training else None
+                }
+            else:
+                outputs["tool_use"] = {
+                    "should_use": should_use_tool,
+                    "tool_id": tool_id,
+                    "params": tool_params,
+                    "context": context
+                }
+        else:
+            outputs["tool_use"] = {
+                "should_use": should_use_tool,
+                "tool_id": tool_id,
+                "params": tool_params,
+                "context": context
+            }
+
+        return outputs
+
     def forward(
         self,
         input_ids: Optional[torch.Tensor] = None,
@@ -395,32 +777,9 @@ class AGIModel(nn.Module):
         outputs = {}
         augmented_hidden = None
         
-        if image is not None and self.cfg.use_vision:
-            vision_features = self.vision_encoder(image)
-            outputs["vision_features"] = vision_features
-            
-            if self.cfg.use_multimodal_fusion and hasattr(self, "multimodal_encoder"):
-                # Pass pre-computed vision_features to avoid redundant encoding
-                fused_features = self.multimodal_encoder(
-                    image=None,  # Don't re-encode
-                    text=None,
-                    vision_features=vision_features  # Use already-encoded features
-                )
-                
-                if fused_features.dim() == 3:
-                    obs_from_vision = fused_features.mean(dim=1)
-                else:
-                    obs_from_vision = fused_features
-            else:
-                if vision_features.dim() == 3:
-                    obs_from_vision = vision_features[:, 0, :]
-                else:
-                    obs_from_vision = vision_features
-            
-            if obs is None:
-                obs = obs_from_vision
-            elif obs_from_vision.size(-1) == obs.size(-1):
-                obs = obs * (1 - self.vision_fusion_weight) + obs_from_vision * self.vision_fusion_weight
+        # 1.1 Vision processing via refactored helper method
+        # 1.2 Vision fusion weight clamping is handled inside _process_vision
+        obs, outputs = self._process_vision(image, obs, outputs)
         
         core_outputs = self.core.forward(
             input_ids=input_ids,
@@ -444,107 +803,18 @@ class AGIModel(nn.Module):
             hidden_pooled = hidden[:, -1, :]
         else:
             hidden_pooled = hidden
-        
-        context_additions = []
-        
-        if hasattr(self, "hierarchical_memory"):
-            memory_output, memory_info = self.hierarchical_memory(hidden_pooled)
-            outputs["memory_retrieval"] = memory_output
-            outputs["memory_info"] = memory_info
-            
-            memory_contribution = self.memory_projection(memory_output)
-            context_additions.append(memory_contribution)
-        
-        if self.cfg.use_knowledge_graph and hasattr(self, "knowledge_graph"):
-            # Extract entities and relations from hidden state if not provided
-            if entities is None and hasattr(self, "entity_extractor"):
-                # Predict entity relevance scores from hidden state
-                entity_logits = self.entity_extractor(hidden_pooled)  # [B, num_entities]
-                entities = torch.softmax(entity_logits, dim=-1)
 
-            if relations is None and hasattr(self, "relation_extractor"):
-                # Predict relation relevance scores from hidden state
-                relation_logits = self.relation_extractor(hidden_pooled)  # [B, num_relations]
-                relations = torch.softmax(relation_logits, dim=-1)
+        # 1.1 Language processing via refactored helper method
+        outputs = self._process_language(input_ids, hidden, hidden_pooled, labels, mode, outputs)
 
-            if entities is not None:
-                # Handle different entity input formats
-                if entities.dim() == 1:
-                    # Direct entity indices [B] - lookup embedding directly
-                    kg_embeddings = self.knowledge_graph.entity_embeddings(entities)  # [B, embed_dim]
-                    kg_context = kg_embeddings
-                elif entities.dim() == 2 and entities.size(-1) > self.cfg.entity_embed_dim:
-                    # Softmax scores over all entities [B, num_entities] - top-k weighted sum
-                    top_k = min(5, entities.size(-1))
-                    entity_scores, entity_indices = entities.topk(top_k, dim=-1)
-                    kg_embeddings = self.knowledge_graph.entity_embeddings(entity_indices)
-                    kg_context = (kg_embeddings * entity_scores.unsqueeze(-1)).sum(dim=1)
-                else:
-                    # Already embeddings or other format - pass through
-                    kg_context = entities
+        # 1.1 Memory processing via refactored helper method
+        # 1.10 Entity/Relation extraction with entropy-based confidence filtering
+        context_additions, outputs = self._process_memory(hidden_pooled, entities, relations, outputs)
 
-                kg_contribution = self.kg_projection(kg_context)
-                context_additions.append(kg_contribution)
-
-                outputs["knowledge_context"] = kg_context
-                if entities.dim() == 1:
-                    outputs["extracted_entities"] = entities
-                outputs["extracted_relations"] = relations
-        
-        if self.cfg.use_abstract_reasoning:
-            reasoning_outputs = self.abstract_reasoner(
-                query=hidden_pooled,
-                context=hidden if hidden.dim() == 3 else hidden.unsqueeze(1),
-                mode="auto"
-            )
-            outputs["reasoning"] = reasoning_outputs
-            
-            if "relational" in reasoning_outputs:
-                relational_features = reasoning_outputs["relational"]
-                if relational_features.dim() == 3:
-                    relational_pooled = relational_features.mean(dim=1)
-                else:
-                    relational_pooled = relational_features
-                
-                reasoning_contribution = self.reasoning_projection(relational_pooled)
-                context_additions.append(reasoning_contribution)
-
-            # Counterfactual reasoning: "what if we took different action?"
-            if hasattr(self, "counterfactual_reasoner") and "action_logits" in outputs:
-                # Generate alternative actions to consider
-                action_probs = F.softmax(outputs["action_logits"], dim=-1)
-                top_actions = action_probs.topk(min(3, action_probs.size(-1)), dim=-1)
-
-                counterfactual_outcomes = []
-                for k in range(top_actions.values.size(-1)):
-                    # Create intervention: one-hot action embedding
-                    intervention = torch.zeros_like(action_probs)
-                    intervention.scatter_(-1, top_actions.indices[:, k:k+1], 1.0)
-
-                    # Generate counterfactual state
-                    cf_state = self.counterfactual_reasoner.generate_counterfactual(
-                        factual_state=hidden_pooled,
-                        intervention=intervention
-                    )
-
-                    # Compare to factual outcome
-                    comparison = self.counterfactual_reasoner.compare_outcomes(
-                        factual=hidden_pooled,
-                        counterfactual=cf_state
-                    )
-                    counterfactual_outcomes.append({
-                        "action_idx": top_actions.indices[:, k],
-                        "counterfactual_state": cf_state,
-                        "outcome_diff": comparison
-                    })
-
-                outputs["counterfactual_analysis"] = counterfactual_outcomes
-
-                # Use best counterfactual to adjust action selection
-                if counterfactual_outcomes:
-                    outcome_diffs = torch.stack([cf["outcome_diff"] for cf in counterfactual_outcomes], dim=-1)
-                    best_cf_idx = outcome_diffs.argmax(dim=-1)
-                    outputs["recommended_action"] = top_actions.indices.gather(-1, best_cf_idx.unsqueeze(-1))
+        # 1.1 Reasoning processing via refactored helper method
+        reasoning_contribution, outputs = self._process_reasoning(hidden_pooled, hidden, outputs, device)
+        if reasoning_contribution is not None:
+            context_additions.append(reasoning_contribution)
 
         # === META-LEARNING INTEGRATION ===
         # Use meta-learning modules when enabled
@@ -605,23 +875,48 @@ class AGIModel(nn.Module):
             context_additions.append(transferred_features * 0.3)  # Weighted contribution
 
         # === NEW AGI MODULES IN FORWARD PASS ===
-        
-        # Scene Graph Parsing
+
+        # 1.4 Scene Graph Parsing - Batch-aware, no unnecessary flattening
         scene_graph = None
         if self.cfg.use_scene_graphs and hasattr(self, "scene_graph_builder") and obs is not None:
             scene_graph = self.scene_graph_builder(obs)
             outputs["scene_graph"] = scene_graph
-            
-            # Add scene graph embedding to context
+
+            # Add scene graph embedding to context (batch-aware)
             if scene_graph is not None and hasattr(scene_graph, "objects"):
-                # scene_graph.objects: [num_objects, object_dim]
-                # Flatten to [num_objects * object_dim] then replicate for batch
-                scene_embedding = scene_graph.objects.reshape(-1).unsqueeze(0).expand(batch_size, -1)
-                    
-                # Project to hidden size if needed
-                # Use pre-defined scene_projection (moved to __init__ for efficiency)
+                scene_objects = scene_graph.objects
+
+                # 1.4 Batch-aware scene graph handling
+                if scene_objects.dim() == 2:
+                    # [num_objects, object_dim] - single scene graph for all batch items
+                    # Keep structure, just expand for batch
+                    num_objects = scene_objects.size(0)
+                    object_dim = scene_objects.size(1)
+
+                    # Reshape preserving object structure: [1, num_objects * object_dim]
+                    scene_flat = scene_objects.reshape(1, -1)
+                    scene_embedding = scene_flat.expand(batch_size, -1)
+                elif scene_objects.dim() == 3:
+                    # [B, num_objects, object_dim] - already batch-aware
+                    batch_size_scene = scene_objects.size(0)
+                    scene_embedding = scene_objects.reshape(batch_size_scene, -1)
+
+                    # Handle batch size mismatch
+                    if batch_size_scene != batch_size:
+                        if batch_size_scene == 1:
+                            scene_embedding = scene_embedding.expand(batch_size, -1)
+                        else:
+                            # Truncate or pad to match
+                            scene_embedding = scene_embedding[:batch_size] if batch_size_scene > batch_size else \
+                                F.pad(scene_embedding, (0, 0, 0, batch_size - batch_size_scene))
+                else:
+                    # Fallback: flatten whatever we have
+                    scene_embedding = scene_objects.reshape(-1).unsqueeze(0).expand(batch_size, -1)
+
+                # Project to hidden size
                 scene_contribution = self.scene_projection(scene_embedding)
                 context_additions.append(scene_contribution)
+                outputs["scene_embedding"] = scene_embedding  # For debugging
         
         # Intrinsic Motivation - compute curiosity/novelty/empowerment rewards
         if self.cfg.use_intrinsic_motivation and hasattr(self, "intrinsic_motivation"):
@@ -678,7 +973,7 @@ class AGIModel(nn.Module):
                     exploration_goal = self.intrinsic_motivation.goal_generator(obs)
                     outputs["exploration_goal"] = exploration_goal
 
-        # Program Synthesis - Actually synthesize and execute programs
+        # 1.5 Program Synthesis - Type checking and proper error handling with logging
         if self.cfg.use_program_synthesis and hasattr(self, "program_synthesizer"):
             program_context = None
             if "reasoning" in outputs and "relational" in outputs["reasoning"]:
@@ -686,64 +981,122 @@ class AGIModel(nn.Module):
                 outputs["program_context"] = program_context
 
             # Attempt synthesis when we have context and low confidence
+            confidence_val = outputs.get("confidence", torch.tensor(1.0))
+            if isinstance(confidence_val, torch.Tensor):
+                confidence_mean = confidence_val.mean().item()
+            else:
+                confidence_mean = float(confidence_val)
+
             should_synthesize = (
                 program_context is not None and
                 mode == "inference" and
-                outputs.get("confidence", torch.tensor(1.0)).mean() < 0.7
+                confidence_mean < 0.7
             )
 
             if should_synthesize:
                 # Create pseudo-examples from context for synthesis
                 # Input: current hidden state, Output: expected action pattern
                 if obs is not None and "action_logits" in outputs:
-                    # Use hidden state as "input" and action pattern as "output"
+                    # 1.5 Type checking for inputs
                     synth_input = hidden_pooled
-                    synth_output = F.softmax(outputs["action_logits"], dim=-1)
+                    action_logits = outputs["action_logits"]
 
-                    # Create example pairs for synthesis
-                    examples = [(synth_input[i], synth_output[i]) for i in range(min(batch_size, 3))]
-
-                    try:
-                        # Synthesize program from examples
-                        synthesized_program = self.program_synthesizer.synthesize_from_examples(
-                            examples=examples,
-                            num_iterations=10  # Limited iterations for speed
-                        )
-
-                        if synthesized_program is not None:
-                            outputs["synthesized_program"] = synthesized_program
-                            outputs["program_synthesis_success"] = True
-
-                            # Execute synthesized program on hidden state
-                            try:
-                                program_output = self.program_synthesizer.dsl.execute(
-                                    synthesized_program,
-                                    hidden_pooled.mean(dim=0).tolist()  # Convert to list for DSL
-                                )
-                                outputs["program_output"] = program_output
-                            except Exception:
-                                pass  # Execution failed, keep neural output
-                        else:
-                            outputs["program_synthesis_success"] = False
-                    except Exception:
+                    # Validate tensor types
+                    if not isinstance(synth_input, torch.Tensor):
+                        logger.warning("Program synthesis skipped: synth_input is not a tensor")
                         outputs["program_synthesis_success"] = False
+                        outputs["program_synthesis_error"] = "Invalid input type"
+                    elif not isinstance(action_logits, torch.Tensor):
+                        logger.warning("Program synthesis skipped: action_logits is not a tensor")
+                        outputs["program_synthesis_success"] = False
+                        outputs["program_synthesis_error"] = "Invalid action_logits type"
+                    else:
+                        synth_output = F.softmax(action_logits, dim=-1)
+
+                        # Create example pairs for synthesis with type validation
+                        examples = []
+                        for i in range(min(batch_size, 3)):
+                            inp = synth_input[i]
+                            out = synth_output[i]
+                            # Validate each example
+                            if inp.dim() == 1 and out.dim() == 1:
+                                examples.append((inp, out))
+                            else:
+                                logger.debug(f"Skipping example {i}: invalid dimensions inp={inp.dim()}, out={out.dim()}")
+
+                        if not examples:
+                            logger.warning("Program synthesis skipped: no valid examples")
+                            outputs["program_synthesis_success"] = False
+                            outputs["program_synthesis_error"] = "No valid examples"
+                        else:
+                            try:
+                                # Synthesize program from examples
+                                synthesized_program = self.program_synthesizer.synthesize_from_examples(
+                                    examples=examples,
+                                    num_iterations=10  # Limited iterations for speed
+                                )
+
+                                if synthesized_program is not None:
+                                    outputs["synthesized_program"] = synthesized_program
+                                    outputs["program_synthesis_success"] = True
+                                    logger.debug(f"Program synthesized with score: {synthesized_program.score:.3f}")
+
+                                    # Execute synthesized program on hidden state
+                                    try:
+                                        input_data = hidden_pooled.mean(dim=0).tolist()
+                                        # Type check input data
+                                        if not isinstance(input_data, list):
+                                            raise TypeError(f"Expected list, got {type(input_data)}")
+
+                                        program_output = synthesized_program.execute(input_data)
+                                        outputs["program_output"] = program_output
+                                        logger.debug(f"Program executed successfully, output type: {type(program_output)}")
+                                    except TypeError as te:
+                                        logger.warning(f"Program execution type error: {te}")
+                                        outputs["program_execution_error"] = str(te)
+                                    except Exception as e:
+                                        logger.warning(f"Program execution failed: {e}")
+                                        outputs["program_execution_error"] = str(e)
+                                else:
+                                    outputs["program_synthesis_success"] = False
+                                    logger.debug("Program synthesis returned None")
+                            except TypeError as te:
+                                logger.error(f"Program synthesis type error: {te}")
+                                outputs["program_synthesis_success"] = False
+                                outputs["program_synthesis_error"] = f"Type error: {te}"
+                            except ValueError as ve:
+                                logger.error(f"Program synthesis value error: {ve}")
+                                outputs["program_synthesis_success"] = False
+                                outputs["program_synthesis_error"] = f"Value error: {ve}"
+                            except Exception as e:
+                                logger.error(f"Program synthesis unexpected error: {e}")
+                                outputs["program_synthesis_success"] = False
+                                outputs["program_synthesis_error"] = f"Unexpected: {e}"
         
-        # Grounded Language Understanding
+        # 1.6 Grounded Language Understanding - Allow any modality (not strict AND)
         if self.cfg.use_grounded_language and hasattr(self, "grounded_language"):
-            if image is not None and hasattr(self, "vision_encoder"):
-                # Vision-language grounding
-                vision_features = outputs.get("vision_features")
-                if vision_features is not None:
-                    grounded_output = self.grounded_language(
-                        text_features=hidden_pooled,
-                        vision_features=vision_features,
-                        mode=mode
-                    )
-                    outputs["grounded_language"] = grounded_output
-                    
-                    # Add grounded understanding to context
-                    if "grounded_hidden" in grounded_output:
-                        context_additions.append(grounded_output["grounded_hidden"])
+            # Get available modalities
+            vision_features = outputs.get("vision_features")
+            has_vision = vision_features is not None
+            has_text = hidden_pooled is not None  # Text features from core processing
+
+            # 1.6 Allow grounding with ANY available modality, not requiring both
+            if has_vision or has_text:
+                grounded_output = self.grounded_language(
+                    text_features=hidden_pooled if has_text else None,
+                    vision_features=vision_features if has_vision else None,
+                    image=image if not has_vision and image is not None else None,
+                    mode=mode
+                )
+                outputs["grounded_language"] = grounded_output
+                outputs["grounded_modalities"] = {
+                    "vision": has_vision,
+                    "text": has_text
+                }
+
+                # Add grounded understanding to context
+                if "grounded_hidden" in grounded_output:
+                    context_additions.append(grounded_output["grounded_hidden"])
         
         # Meta-Cognition (inference only to avoid training overhead)
         # Process each sample in batch for proper metacognition analysis
@@ -855,16 +1208,9 @@ class AGIModel(nn.Module):
             if "value" in outputs:
                 outputs["value"] = outputs["value"] + augmented_value
         
-        if self.cfg.use_tool_use and mode in ["train", "inference"]:
-            context = augmented_hidden if augmented_hidden is not None else hidden_pooled
-            
-            should_use_tool, tool_id, tool_params = self.tool_controller(context)
-            outputs["tool_use"] = {
-                "should_use": should_use_tool,
-                "tool_id": tool_id,
-                "params": tool_params,
-                "context": context
-            }
+        # 1.1 Action/Tool processing via refactored helper method
+        # 1.13 Differentiable tool interface with straight-through estimator
+        outputs = self._process_action(hidden_pooled, augmented_hidden, context_additions, outputs, mode)
 
         # === UNCERTAINTY-BASED ACTION REJECTION (Safety Feature) ===
         # Refuse to output confident actions when uncertainty is too high

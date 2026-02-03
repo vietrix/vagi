@@ -2,11 +2,13 @@
 
 from .experience import ExperienceBuffer, ExperienceRecord, QualityGate
 from .losses import (
+    action_validity_loss,
     budget_loss,
     imagination_consistency_loss,
     language_loss,
     policy_loss,
     reflection_loss,
+    temporal_consistency_loss,
     total_loss,
     value_loss,
     world_loss,
@@ -31,16 +33,27 @@ from .online_learner import (
     ConfidenceGate,
     OnlineExperienceBuffer,
 )
+from .gradient_safety import (
+    GradientSafetyConfig,
+    GradientSafetyManager,
+    GradientMonitor,
+    GradientClipper,
+    LossScaler,
+    safe_backward,
+    check_model_health,
+)
 
 __all__ = [
     "ExperienceBuffer",
     "ExperienceRecord",
     "QualityGate",
+    "action_validity_loss",
     "budget_loss",
     "imagination_consistency_loss",
     "language_loss",
     "policy_loss",
     "reflection_loss",
+    "temporal_consistency_loss",
     "total_loss",
     "value_loss",
     "world_loss",
@@ -64,4 +77,12 @@ __all__ = [
     "OnlineLearningConfig",
     "ConfidenceGate",
     "OnlineExperienceBuffer",
+    # Gradient Safety (new)
+    "GradientSafetyConfig",
+    "GradientSafetyManager",
+    "GradientMonitor",
+    "GradientClipper",
+    "LossScaler",
+    "safe_backward",
+    "check_model_health",
 ]

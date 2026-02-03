@@ -17,7 +17,12 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    HAS_TENSORBOARD = True
+except ImportError:
+    HAS_TENSORBOARD = False
+    SummaryWriter = None
 
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -451,9 +456,9 @@ def main():
     # Mixed precision scaler
     scaler = torch.amp.GradScaler(enabled=args.fp16)
 
-    # TensorBoard writer
+    # TensorBoard writer (optional)
     writer = None
-    if is_main:
+    if is_main and HAS_TENSORBOARD:
         log_dir = Path(args.output_dir) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         writer = SummaryWriter(log_dir)

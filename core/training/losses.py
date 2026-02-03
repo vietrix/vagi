@@ -15,6 +15,35 @@ def language_loss(
     k_suffix: int = 0,
     ignore_index: int = -100,
 ) -> torch.Tensor:
+    """Compute cross-entropy loss for language modeling.
+
+    Args:
+        text_logits: Model output logits of shape (batch, seq_len, vocab_size).
+        labels: Target token indices of shape (batch, seq_len). Must be torch.long.
+        k_prefix: Number of prefix tokens to exclude from loss computation (Issue 7.2).
+            Use when model output includes special prefix tokens (e.g., BOS, task
+            embeddings, or prompt tokens) that should not contribute to the loss.
+            Example: k_prefix=1 skips the BOS token position in loss calculation.
+        k_suffix: Number of suffix tokens to exclude from loss computation (Issue 7.2).
+            Use when model output includes special suffix tokens (e.g., EOS padding,
+            or auxiliary output positions) that should not contribute to the loss.
+            Example: k_suffix=2 excludes the last 2 positions from loss calculation.
+        ignore_index: Token index to ignore in loss (default: -100, standard for
+            cross_entropy). Use for padding tokens or masked positions in labels.
+
+    Returns:
+        Scalar cross-entropy loss averaged over non-ignored positions.
+
+    Raises:
+        TypeError: If labels are not torch.long dtype.
+        ValueError: If k_prefix or k_suffix are negative.
+        ValueError: If sliced logits and labels have mismatched sequence lengths.
+
+    Example:
+        >>> # Skip BOS token (k_prefix=1) and EOS padding (k_suffix=1)
+        >>> logits = model(input_ids)  # (B, seq_len+2, vocab)
+        >>> loss = language_loss(logits, labels, k_prefix=1, k_suffix=1)
+    """
     if labels.dtype != torch.long:
         raise TypeError("labels must be torch.long")
     if k_prefix < 0:
@@ -78,8 +107,29 @@ def imagination_consistency_loss(
     world_pred: torch.Tensor,
     logvar: Optional[torch.Tensor] = None,
     max_delta: float = 1.0,
+    adaptive_threshold: bool = True,
+    base_threshold_scale: float = 1.0,
+    uncertainty_sensitivity: float = 2.0,
 ) -> torch.Tensor:
-    """Penalize implausible drift across imagined world steps."""
+    """Penalize implausible drift across imagined world steps.
+
+    Issue 7.3: Added uncertainty-based adaptive threshold. When logvar is provided
+    and adaptive_threshold=True, the max_delta threshold is scaled based on model
+    uncertainty - higher uncertainty allows larger deltas (more exploration),
+    while lower uncertainty enforces stricter consistency.
+
+    Args:
+        world_pred: World model predictions of shape (B, H, O) where H is horizon.
+        logvar: Optional log-variance for uncertainty weighting (B, H, O) or (B, 1, O).
+        max_delta: Base maximum allowed delta before penalty applies.
+        adaptive_threshold: If True and logvar provided, scale threshold by uncertainty.
+        base_threshold_scale: Multiplier for the base threshold (default 1.0).
+        uncertainty_sensitivity: How strongly uncertainty affects the threshold.
+            Higher values = uncertainty has more effect on threshold scaling.
+
+    Returns:
+        Scalar consistency loss penalizing large prediction jumps.
+    """
     if world_pred.ndim == 2:
         world_pred = world_pred.unsqueeze(1)
     if world_pred.ndim != 3:
@@ -88,9 +138,8 @@ def imagination_consistency_loss(
         return torch.zeros((), device=world_pred.device)
 
     deltas = torch.abs(world_pred[:, 1:, :] - world_pred[:, :-1, :])
-    penalty = torch.relu(deltas - max_delta)
-    penalty = penalty ** 2
 
+    # Issue 7.3: Uncertainty-based adaptive threshold
     if logvar is not None:
         if logvar.ndim == 2:
             logvar = logvar.unsqueeze(1)
@@ -98,9 +147,28 @@ def imagination_consistency_loss(
             raise ValueError("logvar must have shape (B, H, O)")
         if logvar.shape[1] == 1:
             logvar = logvar.expand(-1, world_pred.shape[1], -1)
+
+        if adaptive_threshold:
+            # Compute per-step uncertainty from averaged neighboring logvars
+            avg_logvar = 0.5 * (logvar[:, 1:, :] + logvar[:, :-1, :])
+            # Convert logvar to std: std = exp(logvar/2)
+            uncertainty = torch.exp(avg_logvar * 0.5)
+            # Adaptive threshold: higher uncertainty -> higher threshold
+            # threshold = base * (1 + sensitivity * uncertainty)
+            adaptive_max_delta = max_delta * base_threshold_scale * (
+                1.0 + uncertainty_sensitivity * uncertainty
+            )
+            penalty = torch.relu(deltas - adaptive_max_delta)
+        else:
+            penalty = torch.relu(deltas - max_delta * base_threshold_scale)
+
+        # Weight by inverse variance (certain predictions penalized more)
         weight = torch.exp(-logvar)
         weight = 0.5 * (weight[:, 1:, :] + weight[:, :-1, :])
-        penalty = penalty * weight
+        penalty = penalty ** 2 * weight
+    else:
+        penalty = torch.relu(deltas - max_delta * base_threshold_scale)
+        penalty = penalty ** 2
 
     return torch.mean(penalty)
 
@@ -170,6 +238,17 @@ def reflection_loss(
     info_gain: Optional[torch.Tensor],
     info_targets: Optional[torch.Tensor],
 ) -> Dict[str, torch.Tensor]:
+    """Compute reflection losses for error type and info gain (Issue 2.7).
+
+    Args:
+        error_logits: Error type prediction logits (B, num_error_types)
+        error_targets: Ground truth error type indices (B,) or (B, 1)
+        info_gain: Predicted information gain scores (B, 1)
+        info_targets: Target information gain values (B, 1)
+
+    Returns:
+        Dictionary of loss terms that can be added to total loss
+    """
     losses: Dict[str, torch.Tensor] = {}
     if error_logits is not None and error_targets is not None:
         if error_targets.dtype != torch.long:
@@ -180,6 +259,97 @@ def reflection_loss(
     if info_gain is not None and info_targets is not None:
         losses["info_gain"] = F.mse_loss(info_gain, info_targets)
     return losses
+
+
+def action_validity_loss(
+    action_valid: Optional[torch.Tensor],
+    action_valid_targets: Optional[torch.Tensor],
+    action_mask: Optional[torch.Tensor] = None,
+) -> Dict[str, torch.Tensor]:
+    """Compute action validity prediction loss (Issue 2.6).
+
+    Args:
+        action_valid: Predicted action validity probabilities (B, action_dim)
+        action_valid_targets: Ground truth validity (B, action_dim) in [0, 1] or binary
+        action_mask: Optional mask for which actions to consider
+
+    Returns:
+        Dictionary with action_validity loss if inputs are provided
+    """
+    losses: Dict[str, torch.Tensor] = {}
+    if action_valid is not None and action_valid_targets is not None:
+        if action_mask is not None:
+            # Only compute loss on masked positions
+            valid = action_valid[action_mask]
+            targets = action_valid_targets[action_mask]
+        else:
+            valid = action_valid
+            targets = action_valid_targets
+        losses["action_validity"] = F.binary_cross_entropy(valid, targets.float())
+    return losses
+
+
+def temporal_consistency_loss(
+    world_pred: torch.Tensor,
+    world_logvar: Optional[torch.Tensor] = None,
+    max_delta: float = 1.0,
+    smoothness_weight: float = 0.1,
+) -> torch.Tensor:
+    """Temporal consistency loss for world model predictions (Issue 2.11).
+
+    Penalizes inconsistent predictions over time by enforcing smooth transitions
+    and penalizing implausible jumps.
+
+    Args:
+        world_pred: World predictions (B, horizon, obs_dim)
+        world_logvar: Optional log variance for uncertainty weighting
+        max_delta: Maximum allowed delta before penalty kicks in
+        smoothness_weight: Weight for smoothness term
+
+    Returns:
+        Temporal consistency loss scalar
+    """
+    if world_pred.ndim == 2:
+        world_pred = world_pred.unsqueeze(1)
+    if world_pred.ndim != 3:
+        raise ValueError("world_pred must have shape (B, H, O)")
+    if world_pred.shape[1] < 2:
+        return torch.zeros((), device=world_pred.device)
+
+    # Compute step-to-step deltas
+    deltas = world_pred[:, 1:, :] - world_pred[:, :-1, :]
+
+    # Hard constraint: penalize jumps larger than max_delta
+    large_delta_penalty = torch.relu(torch.abs(deltas) - max_delta) ** 2
+
+    # Soft constraint: encourage smooth transitions (minimize second derivative)
+    if world_pred.shape[1] >= 3:
+        second_derivative = world_pred[:, 2:, :] - 2 * world_pred[:, 1:-1, :] + world_pred[:, :-2, :]
+        smoothness_penalty = second_derivative ** 2
+    else:
+        smoothness_penalty = torch.zeros_like(large_delta_penalty)
+
+    # Weight by uncertainty if available
+    if world_logvar is not None:
+        if world_logvar.ndim == 2:
+            world_logvar = world_logvar.unsqueeze(1)
+        if world_logvar.ndim != 3:
+            raise ValueError("world_logvar must have shape (B, H, O)")
+        if world_logvar.shape[1] == 1:
+            world_logvar = world_logvar.expand(-1, world_pred.shape[1], -1)
+        # Use inverse variance as weight (more certain = higher weight)
+        weight = torch.exp(-world_logvar)
+        weight_delta = 0.5 * (weight[:, 1:, :] + weight[:, :-1, :])
+        large_delta_penalty = large_delta_penalty * weight_delta
+        if world_pred.shape[1] >= 3:
+            weight_smooth = weight[:, 1:-1, :]
+            smoothness_penalty = smoothness_penalty * weight_smooth
+
+    loss = torch.mean(large_delta_penalty)
+    if world_pred.shape[1] >= 3:
+        loss = loss + smoothness_weight * torch.mean(smoothness_penalty)
+
+    return loss
 
 
 def budget_loss(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 
-from vagi_core import VAGIConfig
+from core.base.config import VAGIConfig
 
 
 @dataclass

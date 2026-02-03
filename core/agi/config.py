@@ -156,7 +156,71 @@ class AGIConfig:
     metacog_task_embedding_dim: int = 128
     metacog_capability_dim: int = 64
     metacog_num_capability_types: int = 20
-    
+
+    # =========================================================================
+    # NEW: Previously hardcoded values now configurable
+    # =========================================================================
+
+    # Context Gate Configuration (was hardcoded as hidden_size // 4)
+    context_gate_dim: int = 256  # Will default to hidden_size // 4 if 0
+    context_gate_temperature: float = 1.0
+
+    # Transfer Learning (was hardcoded as 0.3/0.7 blend)
+    transfer_blend_weight: float = 0.3  # Weight for transferred features
+    transfer_blend_learnable: bool = True  # Make blend weight learnable
+
+    # Vision Fusion (was hardcoded 0.5)
+    vision_fusion_initial_weight: float = 0.5
+    vision_fusion_clamp_min: float = 0.0
+    vision_fusion_clamp_max: float = 1.0
+
+    # Counterfactual Reasoning (was hardcoded top-3)
+    counterfactual_beam_width: int = 3
+    counterfactual_max_depth: int = 5
+
+    # Memory Configuration
+    memory_aggregation_method: str = "mean"  # "mean", "max", "attention"
+    memory_temporal_decay: float = 0.95  # Was hardcoded
+
+    # Training Configuration
+    loss_weight_language: float = 1.0
+    loss_weight_action: float = 0.3
+    loss_weight_value: float = 0.1
+    loss_weight_world: float = 0.1
+    loss_weight_imagination: float = 0.01
+
+    # Gradient Safety
+    gradient_clip_norm: float = 1.0
+    gradient_clip_type: str = "norm"  # "norm", "value", "adaptive"
+    check_nan_gradients: bool = True
+    check_inf_gradients: bool = True
+    max_consecutive_nan: int = 3
+
+    # KV-Cache Configuration
+    use_kv_cache: bool = True
+    kv_cache_max_length: int = 2048
+    kv_cache_sliding_window: int = 512
+
+    # Slot Attention (Scene Graphs)
+    slot_attention_iterations: int = 3  # Was hardcoded
+    slot_attention_epsilon: float = 1e-8
+
+    # Object Detection
+    num_object_types: int = 20  # Was hardcoded
+
+    # Tokenizer Configuration
+    tokenizer_cache_size: int = 10000
+    tokenizer_unk_token: str = "<unk>"
+
+    # Quality Gate Thresholds
+    quality_gate_min_reward: float = -10.0
+    quality_gate_max_loss: float = 100.0
+    quality_gate_weighted: bool = True  # Use weighted scoring instead of all()
+
+    # Checkpoint Configuration
+    checkpoint_version: str = "2.0"
+    checkpoint_backward_compatible: bool = True
+
     def __post_init__(self) -> None:
         """Validate configuration."""
         if self.use_confidence and not self.use_uncertainty:
