@@ -9,7 +9,7 @@ import pytest
 import torch
 from torch import nn
 
-from vagi_core import VAGIConfig, VAGICore
+from core.base import VAGIConfig, VAGICore
 
 
 def test_backend_parity(tmp_path: Path) -> None:

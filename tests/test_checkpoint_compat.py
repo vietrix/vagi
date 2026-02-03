@@ -2,7 +2,7 @@ import torch
 from safetensors.torch import save_file
 
 from io.checkpoint import load_checkpoint
-from vagi_core import VAGIConfig, VAGICore
+from core.base import VAGIConfig, VAGICore
 
 
 def test_loads_checkpoint_without_meta(tmp_path) -> None:

@@ -1,6 +1,6 @@
 import torch
 
-from vagi_core import VAGIConfig, VAGICore
+from core.base import VAGIConfig, VAGICore
 
 
 def test_step_consistency() -> None:
