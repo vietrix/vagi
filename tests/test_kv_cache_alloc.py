@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from vagi_core import VAGIConfig, VAGICore
+from core.base import VAGIConfig, VAGICore
 
 
 def test_init_state_prefill_kv_shapes() -> None:

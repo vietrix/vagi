@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from vagi_core import VAGIConfig, VAGICore
+from core.base import VAGIConfig, VAGICore
 
 
 def _build_model(max_seq_len: int = 8) -> VAGICore:

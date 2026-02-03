@@ -1,4 +1,4 @@
-from vagi_core import RecurrentState, VAGIConfig, VAGICore
+from core.base import RecurrentState, VAGIConfig, VAGICore
 
 
 def test_imports() -> None:

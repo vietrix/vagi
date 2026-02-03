@@ -1,4 +1,4 @@
-from vagi_core import BudgetController, CounterfactualRecord
+from core.planning import BudgetController, CounterfactualRecord
 
 
 def test_budget_controller_decision_bounds() -> None:

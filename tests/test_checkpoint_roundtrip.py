@@ -1,6 +1,6 @@
 import torch
 
-from vagi_core import VAGIConfig, VAGICore
+from core.base import VAGIConfig, VAGICore
 
 from io.checkpoint import load_checkpoint, save_checkpoint
 
