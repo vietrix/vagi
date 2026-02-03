@@ -20,9 +20,12 @@ dependencies = [
   "uvicorn==0.30.6",
 ]
 
-[tool.setuptools]
-packages = ["vagi_core", "scripts", "io", "envs", "runtime"]
-package-dir = { "vagi_core" = "core", "io" = "io" }
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "scripts*", "envs*", "runtime*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.yaml", "*.txt"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
