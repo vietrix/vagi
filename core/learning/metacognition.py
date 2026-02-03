@@ -417,27 +417,29 @@ class UncertaintyCalibrator(nn.Module):
 
 class MetaCognition(nn.Module):
     """High-level meta-cognitive control."""
-    
+
     def __init__(
         self,
         hidden_size: int = 256,
         task_embedding_dim: int = 128,
+        max_trace_history: int = 100,  # Prevent memory leak
     ):
         super().__init__()
-        
+
         self.self_model = SelfModel(
             task_embedding_dim=task_embedding_dim
         )
-        
+
         self.thinking_monitor = ThinkingMonitor(
             hidden_size=hidden_size
         )
-        
+
         self.uncertainty_calibrator = UncertaintyCalibrator(
             hidden_size=hidden_size
         )
-        
-        # Thought history
+
+        # Thought history with bounded size (ring buffer)
+        self.max_trace_history = max_trace_history
         self.thought_trace_history: List[ThoughtTrace] = []
         
     def should_i_attempt(
@@ -493,7 +495,7 @@ class MetaCognition(nn.Module):
         # Get calibrated confidence
         confidence = self.calibrate_confidence(hidden_state)
         
-        # Record thought trace
+        # Record thought trace (ring buffer to prevent memory leak)
         if current_thoughts:
             trace = ThoughtTrace(
                 thoughts=current_thoughts.copy(),
@@ -502,6 +504,9 @@ class MetaCognition(nn.Module):
                 coherence_score=monitoring_result.get('coherence', 1.0),
                 timestamp=len(self.thought_trace_history)
             )
+            # Ring buffer: remove oldest if at capacity
+            if len(self.thought_trace_history) >= self.max_trace_history:
+                self.thought_trace_history.pop(0)
             self.thought_trace_history.append(trace)
         
         return {

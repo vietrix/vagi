@@ -370,7 +370,7 @@ class ContinuousLearner:
         for step_data in episode_data:
             if 'state' in step_data and 'next_state' in step_data:
                 added = self.observe(
-                    state=step_data['état'],
+                    state=step_data['state'],
                     action=step_data.get('action', torch.tensor([0])),
                     reward=step_data.get('reward', 0.0),
                     next_state=step_data['next_state'],

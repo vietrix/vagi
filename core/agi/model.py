@@ -146,7 +146,13 @@ class AGIModel(nn.Module):
         self.augmented_value_head = nn.Linear(cfg.hidden_size, 1)
         self.vision_fusion_weight = nn.Parameter(torch.tensor(0.5))
         self._tokenizer: Optional[BytePairTokenizer] = None
-        
+
+        # Learned Context Gates - dynamically weight context contributions
+        # Each gate learns attention weights based on query (hidden_pooled)
+        self.context_gate_query = nn.Linear(cfg.hidden_size, cfg.hidden_size // 4)
+        self.context_gate_key = nn.Linear(cfg.hidden_size, cfg.hidden_size // 4)
+        self.context_gate_temperature = nn.Parameter(torch.tensor(1.0))
+
         # Setup extended AGI modules
         self.setup_extended_modules()
 
@@ -509,39 +515,55 @@ class AGIModel(nn.Module):
                         context_additions.append(grounded_output["grounded_hidden"])
         
         # Meta-Cognition (inference only to avoid training overhead)
-        # Note: MetaCognition works on single samples, so we process first sample only
+        # Process each sample in batch for proper metacognition analysis
         if self.cfg.use_metacognition and hasattr(self, "metacognition") and mode == "inference":
-            # Task embedding for single sample (first in batch)
-            if task_ids is not None:
-                task_emb = torch.randn(
-                    1,
-                    self.cfg.metacog_task_embedding_dim,
-                    device=device
-                )
-            else:
-                task_emb = torch.zeros(
-                    1,
-                    self.cfg.metacog_task_embedding_dim,
-                    device=device
-                )
+            metacog_results = []
+            batch_confidences = []
 
-            # Use first sample's hidden state
-            hidden_for_metacog = hidden_pooled[0:1] if hidden_pooled.dim() > 1 else hidden_pooled.unsqueeze(0)
+            for i in range(batch_size):
+                # Task embedding per sample
+                if task_ids is not None and i < task_ids.size(0):
+                    task_emb = torch.randn(
+                        1,
+                        self.cfg.metacog_task_embedding_dim,
+                        device=device
+                    )
+                else:
+                    task_emb = torch.zeros(
+                        1,
+                        self.cfg.metacog_task_embedding_dim,
+                        device=device
+                    )
 
-            # Thought sequence (use hidden states)
-            thought_sequence = [hidden_for_metacog]
+                # Extract single sample's hidden state
+                hidden_for_metacog = hidden_pooled[i:i+1]
 
-            # Meta-cognitive analysis (single sample)
-            try:
-                metacog_output = self.metacognition(
-                    task_embedding=task_emb,
-                    current_thoughts=thought_sequence,
-                    hidden_state=hidden_for_metacog
-                )
-                outputs["metacognition"] = metacog_output
-            except Exception:
-                # Fallback if metacognition fails
-                outputs["metacognition"] = {"confidence": 1.0, "should_attempt": True}
+                # Thought sequence for this sample
+                thought_sequence = [hidden_for_metacog]
+
+                # Meta-cognitive analysis
+                try:
+                    metacog_output = self.metacognition(
+                        task_embedding=task_emb,
+                        current_thoughts=thought_sequence,
+                        hidden_state=hidden_for_metacog
+                    )
+                    metacog_results.append(metacog_output)
+                    batch_confidences.append(metacog_output.get('calibrated_confidence', 1.0))
+                except Exception:
+                    # Fallback for this sample
+                    metacog_results.append({"confidence": 1.0, "should_attempt": True})
+                    batch_confidences.append(1.0)
+
+            # Aggregate batch results
+            outputs["metacognition"] = {
+                "batch_results": metacog_results,
+                "mean_confidence": sum(batch_confidences) / len(batch_confidences),
+                "min_confidence": min(batch_confidences),
+                "confidences": torch.tensor(batch_confidences, device=device),
+                # Use first sample's detailed output for backward compatibility
+                **metacog_results[0]
+            }
         
         # === ONLINE LEARNING INTEGRATION ===
         # Collect confidence metrics for online learning decision
@@ -582,9 +604,29 @@ class AGIModel(nn.Module):
         # === END NEW MODULES ===
 
         if context_additions:
-            augmented_hidden = hidden_pooled + sum(context_additions)
+            # Learned context gating: compute attention weights for each context
+            # Query from hidden_pooled, keys from each context addition
+            query = self.context_gate_query(hidden_pooled)  # [B, D/4]
+
+            # Stack context additions and compute keys
+            context_stack = torch.stack(context_additions, dim=1)  # [B, num_ctx, D]
+            keys = self.context_gate_key(context_stack)  # [B, num_ctx, D/4]
+
+            # Scaled dot-product attention weights
+            attn_scores = torch.bmm(keys, query.unsqueeze(-1)).squeeze(-1)  # [B, num_ctx]
+            attn_scores = attn_scores / (self.context_gate_temperature * (query.size(-1) ** 0.5))
+            attn_weights = F.softmax(attn_scores, dim=-1)  # [B, num_ctx]
+
+            # Weighted sum of context contributions
+            weighted_context = torch.bmm(
+                attn_weights.unsqueeze(1),  # [B, 1, num_ctx]
+                context_stack  # [B, num_ctx, D]
+            ).squeeze(1)  # [B, D]
+
+            augmented_hidden = hidden_pooled + weighted_context
             outputs["augmented_hidden"] = augmented_hidden
-            
+            outputs["context_attention_weights"] = attn_weights  # For interpretability
+
             augmented_action_logits = self.augmented_action_head(augmented_hidden)
             augmented_value = self.augmented_value_head(augmented_hidden)
             
