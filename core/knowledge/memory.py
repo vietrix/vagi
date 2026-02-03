@@ -202,10 +202,18 @@ class EpisodicMemory(nn.Module):
         # Get top k for each batch item
         k = min(k, self.capacity)
         top_scores, top_indices = torch.topk(similarities, k, dim=-1)
-        
-        # Retrieve episodes - take first batch item for now
-        retrieved_episodes = self.episodes[top_indices[0]]
-        return retrieved_episodes, top_scores[0]
+        # top_indices: [batch_size, k], top_scores: [batch_size, k]
+
+        # Retrieve episodes for ALL batch items (fixed batching)
+        # self.episodes: [capacity, seq_len, hidden_size]
+        # top_indices: [batch_size, k]
+        # Output should be: [batch_size, k, seq_len, hidden_size]
+        batch_size = top_indices.size(0)
+        retrieved_episodes = self.episodes[top_indices.reshape(-1)]  # [batch*k, seq_len, hidden]
+        retrieved_episodes = retrieved_episodes.reshape(
+            batch_size, k, self.sequence_length, self.hidden_size
+        )
+        return retrieved_episodes, top_scores
 
 
 class HierarchicalMemory(nn.Module):
@@ -267,14 +275,22 @@ class HierarchicalMemory(nn.Module):
             raise ValueError(f"Unknown mode: {mode}")
         
         # Get outputs from each memory type
-        working_output = self.working_memory.mean(dim=0).unsqueeze(0).expand(batch_size, -1)  # [batch, hidden]
+        # Working memory: use attention over slots based on query
+        # query: [batch, hidden], working_memory: [slots, hidden]
+        working_attn = torch.matmul(query, self.working_memory.T)  # [batch, slots]
+        working_attn = F.softmax(working_attn / (self.hidden_size ** 0.5), dim=-1)
+        working_output = torch.matmul(working_attn, self.working_memory)  # [batch, hidden]
         
         semantic_values, semantic_weights = self.semantic_memory.retrieve(query, k=5)
         semantic_output = (semantic_values * semantic_weights.unsqueeze(-1)).sum(dim=1)  # [batch, hidden]
         
         episodic_sequences, episodic_scores = self.episodic_memory.retrieve_similar(query, k=3)
-        # episodic_sequences: [k, seq_len, hidden]
-        episodic_output = episodic_sequences.mean(dim=(0, 1)).unsqueeze(0).expand(batch_size, -1)  # [batch, hidden]
+        # episodic_sequences: [batch, k, seq_len, hidden] (fixed batching)
+        # episodic_scores: [batch, k]
+        # Weight episodes by scores and average
+        episodic_weights = F.softmax(episodic_scores, dim=-1)  # [batch, k]
+        episodic_pooled = episodic_sequences.mean(dim=2)  # [batch, k, hidden]
+        episodic_output = (episodic_pooled * episodic_weights.unsqueeze(-1)).sum(dim=1)  # [batch, hidden]
         
         # routing_weights: [batch, 3]
         # outputs: [batch, hidden]
@@ -285,10 +301,17 @@ class HierarchicalMemory(nn.Module):
             routing_weights[:, 2:3] * episodic_output
         )  # [batch, hidden]
         
+        # Compute memory confidence from retrieval scores
+        semantic_confidence = semantic_weights.max(dim=-1)[0].mean().item()
+        episodic_confidence = episodic_scores.max(dim=-1)[0].mean().item()
+        memory_confidence = (semantic_confidence + episodic_confidence) / 2
+
         info = {
             "routing_weights": routing_weights,
             "semantic_weights": semantic_weights,
             "episodic_scores": episodic_scores,
+            "confidence": memory_confidence,
+            "working_attention": working_attn,
         }
         
         return combined_output, info

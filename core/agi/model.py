@@ -400,7 +400,12 @@ class AGIModel(nn.Module):
             outputs["vision_features"] = vision_features
             
             if self.cfg.use_multimodal_fusion and hasattr(self, "multimodal_encoder"):
-                fused_features = self.multimodal_encoder(image=image, text=None)
+                # Pass pre-computed vision_features to avoid redundant encoding
+                fused_features = self.multimodal_encoder(
+                    image=None,  # Don't re-encode
+                    text=None,
+                    vision_features=vision_features  # Use already-encoded features
+                )
                 
                 if fused_features.dim() == 3:
                     obs_from_vision = fused_features.mean(dim=1)
@@ -495,6 +500,43 @@ class AGIModel(nn.Module):
                 
                 reasoning_contribution = self.reasoning_projection(relational_pooled)
                 context_additions.append(reasoning_contribution)
+
+            # Counterfactual reasoning: "what if we took different action?"
+            if hasattr(self, "counterfactual_reasoner") and "action_logits" in outputs:
+                # Generate alternative actions to consider
+                action_probs = F.softmax(outputs["action_logits"], dim=-1)
+                top_actions = action_probs.topk(min(3, action_probs.size(-1)), dim=-1)
+
+                counterfactual_outcomes = []
+                for k in range(top_actions.values.size(-1)):
+                    # Create intervention: one-hot action embedding
+                    intervention = torch.zeros_like(action_probs)
+                    intervention.scatter_(-1, top_actions.indices[:, k:k+1], 1.0)
+
+                    # Generate counterfactual state
+                    cf_state = self.counterfactual_reasoner.generate_counterfactual(
+                        factual_state=hidden_pooled,
+                        intervention=intervention
+                    )
+
+                    # Compare to factual outcome
+                    comparison = self.counterfactual_reasoner.compare_outcomes(
+                        factual=hidden_pooled,
+                        counterfactual=cf_state
+                    )
+                    counterfactual_outcomes.append({
+                        "action_idx": top_actions.indices[:, k],
+                        "counterfactual_state": cf_state,
+                        "outcome_diff": comparison
+                    })
+
+                outputs["counterfactual_analysis"] = counterfactual_outcomes
+
+                # Use best counterfactual to adjust action selection
+                if counterfactual_outcomes:
+                    outcome_diffs = torch.stack([cf["outcome_diff"] for cf in counterfactual_outcomes], dim=-1)
+                    best_cf_idx = outcome_diffs.argmax(dim=-1)
+                    outputs["recommended_action"] = top_actions.indices.gather(-1, best_cf_idx.unsqueeze(-1))
 
         # === META-LEARNING INTEGRATION ===
         # Use meta-learning modules when enabled
@@ -770,7 +812,46 @@ class AGIModel(nn.Module):
                 "params": tool_params,
                 "context": context
             }
-        
+
+        # === UNCERTAINTY-BASED ACTION REJECTION (Safety Feature) ===
+        # Refuse to output confident actions when uncertainty is too high
+        if mode == "inference" and "action_logits" in outputs:
+            # Gather uncertainty indicators
+            uncertainty = outputs.get("uncertainty", torch.zeros(batch_size, device=device))
+            if isinstance(uncertainty, torch.Tensor) and uncertainty.numel() > 1:
+                uncertainty = uncertainty.mean(dim=-1) if uncertainty.dim() > 1 else uncertainty
+
+            confidence = outputs.get("confidence", torch.ones(batch_size, device=device))
+            if isinstance(confidence, torch.Tensor) and confidence.numel() > 1:
+                confidence = confidence.mean(dim=-1) if confidence.dim() > 1 else confidence
+
+            # Also consider metacognition confidence
+            metacog_conf = 1.0
+            if "metacognition" in outputs:
+                metacog = outputs["metacognition"]
+                if isinstance(metacog, dict):
+                    metacog_conf = metacog.get("mean_confidence", 1.0)
+
+            # Combined confidence score
+            combined_confidence = (confidence.mean().item() + metacog_conf) / 2
+
+            # Rejection threshold (configurable via config)
+            rejection_threshold = getattr(self.cfg, 'action_rejection_threshold', 0.2)
+
+            # Mark actions as rejected if confidence too low
+            should_reject = combined_confidence < rejection_threshold
+            outputs["action_rejected"] = should_reject
+            outputs["rejection_confidence"] = combined_confidence
+
+            if should_reject:
+                # Don't modify action_logits, but add a clear signal
+                outputs["rejection_reason"] = f"Confidence too low: {combined_confidence:.3f} < {rejection_threshold}"
+                # Flatten action distribution when rejecting (uniform = "I don't know")
+                if "action_logits" in outputs:
+                    uniform_logits = torch.zeros_like(outputs["action_logits"])
+                    outputs["rejected_original_logits"] = outputs["action_logits"]
+                    outputs["action_logits"] = uniform_logits  # Uniform distribution
+
         if return_loss and self.cfg.use_language_modeling:
             losses = outputs.get("losses_breakdown", {})
             
@@ -801,14 +882,71 @@ class AGIModel(nn.Module):
                         targets["values"]
                     )
                     losses["augmented_value"] = augmented_value_loss
-            
+
+            # === COMPOUND LOSSES FOR ALL AGI MODULES ===
+
+            # Intrinsic Motivation Loss - train curiosity/novelty predictors
+            if "intrinsic_rewards" in outputs and targets is not None:
+                from ..training.losses import intrinsic_reward_loss
+                if "actual_rewards" in targets:
+                    intrinsic_loss = intrinsic_reward_loss(
+                        predicted_rewards=outputs["intrinsic_rewards"],
+                        actual_rewards=targets["actual_rewards"],
+                        states=obs if obs is not None else hidden_pooled,
+                        next_states=outputs.get("world_pred", hidden_pooled)
+                    )
+                    losses["intrinsic_motivation"] = intrinsic_loss * 0.1
+
+            # Meta-Cognition Loss - calibrate confidence predictions
+            if "metacognition" in outputs and targets is not None:
+                from ..training.losses import meta_cognition_loss
+                metacog = outputs["metacognition"]
+                if isinstance(metacog, dict) and "actual_success" in targets:
+                    predicted_conf = metacog.get("mean_confidence", 0.5)
+                    metacog_loss = meta_cognition_loss(
+                        predicted_confidence=torch.tensor([predicted_conf], device=device),
+                        actual_success=targets["actual_success"],
+                        task_embedding=hidden_pooled.mean(dim=0, keepdim=True)
+                    )
+                    losses["metacognition"] = metacog_loss * 0.1
+
+            # Program Synthesis Loss - train program generator
+            if "synthesized_program" in outputs and targets is not None:
+                from ..training.losses import program_synthesis_loss
+                if "target_program" in targets:
+                    prog_loss = program_synthesis_loss(
+                        predicted_program=outputs.get("program_context", hidden_pooled),
+                        target_program=targets["target_program"],
+                        execution_results=outputs.get("program_output"),
+                        expected_outputs=targets.get("expected_outputs")
+                    )
+                    losses["program_synthesis"] = prog_loss * 0.1
+
+            # Transfer Learning Loss - align source/target domains
+            if "transferred_features" in outputs and self.cfg.use_transfer_learning:
+                # Domain alignment via feature consistency
+                transfer_features = outputs["transferred_features"]
+                transfer_loss = F.mse_loss(
+                    transfer_features,
+                    hidden_pooled.detach()  # Should be similar to original
+                ) * 0.01
+                losses["transfer_alignment"] = transfer_loss
+
+            # Few-Shot Learning Loss
+            if "few_shot_logits" in outputs and targets is not None and "actions" in targets:
+                few_shot_loss = F.cross_entropy(
+                    outputs["few_shot_logits"],
+                    targets["actions"]
+                )
+                losses["few_shot"] = few_shot_loss * 0.3
+
             if losses:
                 loss_weights = targets.get("loss_weights", {}) if targets else {}
                 total = 0.0
                 for key, value in losses.items():
                     weight = loss_weights.get(key, 1.0)
                     total = total + weight * value
-                
+
                 outputs["loss"] = total
                 outputs["losses_breakdown"] = losses
         
