@@ -108,7 +108,7 @@ def get_model_config(size: str) -> AGIConfig:
         )
 
     elif size == "xlarge":
-        # ~1B params - full capability
+        # ~1B params - production
         return AGIConfig(
             vocab_size=100000,
             hidden_size=2048,
@@ -126,6 +126,37 @@ def get_model_config(size: str) -> AGIConfig:
             use_gqa=True,
             use_flash_attn=True,
             use_grad_checkpoint=True,
+        )
+
+    elif size == "1.5B" or size == "xxlarge":
+        # ~1.5B params - flagship model
+        return AGIConfig(
+            vocab_size=100000,
+            hidden_size=2560,
+            n_layers=56,
+            n_heads=40,
+            n_kv_heads=8,
+            mlp_ratio=4.0,
+            max_seq_len=8192,
+            obs_dim=1280,
+            obs_tokens=64,
+            action_dim=1280,
+            memory_slots=256,
+            dropout=0.1,
+            use_rotary=True,
+            use_gqa=True,
+            use_flash_attn=True,
+            use_grad_checkpoint=True,
+            # Enable all AGI features
+            use_continuous_learning=True,
+            use_intrinsic_motivation=True,
+            use_program_synthesis=True,
+            use_grounded_language=True,
+            use_metacognition=True,
+            use_scene_graphs=True,
+            use_knowledge_graph=True,
+            use_abstract_reasoning=True,
+            use_meta_learning=True,
         )
 
     else:
