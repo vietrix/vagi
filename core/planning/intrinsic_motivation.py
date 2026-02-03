@@ -239,10 +239,20 @@ class NoveltyDetector(nn.Module):
         """Add state to episodic memory."""
         with torch.no_grad():
             state_encoded = self.encoder(state)
-            
+
+            # Handle both batched and single states
+            if state_encoded.dim() == 1:
+                state_encoded = state_encoded.unsqueeze(0)
+
             for s in state_encoded:
+                # Flatten if needed to match memory shape
+                s_flat = s.flatten()[:self.memory.size(-1)]
+                # Pad if too short
+                if s_flat.size(0) < self.memory.size(-1):
+                    s_flat = F.pad(s_flat, (0, self.memory.size(-1) - s_flat.size(0)))
+
                 idx = self.memory_count.item() % self.capacity
-                self.memory[idx] = s
+                self.memory[idx] = s_flat
                 self.memory_count += 1
     
     def forward(self, state: torch.Tensor) -> torch.Tensor:
@@ -412,23 +422,56 @@ class GoalGenerator(nn.Module):
     ) -> torch.Tensor:
         """Filter goals by reachability."""
         batch_size, num_goals, state_dim = goals.size()
-        
+
         # Expand current state
         current_expanded = current_state.unsqueeze(1).expand(-1, num_goals, -1)
-        
+
         # Reshape for reachability prediction
         current_flat = current_expanded.reshape(-1, state_dim)
         goals_flat = goals.reshape(-1, state_dim)
-        
+
         # Predict reachability
         reachability = self.reachability(
             torch.cat([current_flat, goals_flat], dim=-1)
         ).view(batch_size, num_goals)
-        
+
         # Filter achievable goals
         mask = reachability > threshold
-        
+
         return mask, reachability
+
+    def forward(
+        self,
+        current_state: torch.Tensor,
+        num_goals: int = 5,
+        return_best: bool = True
+    ) -> torch.Tensor:
+        """Generate exploration goal from current state.
+
+        Args:
+            current_state: [B, state_dim] current state tensor
+            num_goals: Number of candidate goals to generate
+            return_best: If True, return single best goal; else return all candidates
+
+        Returns:
+            If return_best: [B, state_dim] best achievable goal
+            Else: [B, num_goals, state_dim] all candidate goals
+        """
+        # Generate candidate goals
+        goals, reachabilities = self.propose_goals(current_state, num_goals)
+
+        if not return_best:
+            return goals
+
+        # Select best goal (highest reachability)
+        best_idx = reachabilities.argmax(dim=-1)  # [B]
+
+        # Gather best goal for each batch element
+        batch_size = goals.size(0)
+        batch_indices = torch.arange(batch_size, device=goals.device)
+        best_goals = goals[batch_indices, best_idx]  # [B, state_dim]
+
+        return best_goals
 
 
 class IntrinsicMotivationSystem(nn.Module):

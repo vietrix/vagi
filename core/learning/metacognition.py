@@ -94,15 +94,25 @@ class SelfModel(nn.Module):
         """
         # Encode task
         task_features = self.task_encoder(task_embedding)
-        
-        # Predict capabilities
-        success_prob = self.capability_predictor['success_prob'](task_features).item()
-        expected_time = self.capability_predictor['expected_time'](task_features).item()
-        confidence = self.capability_predictor['confidence'](task_features).item()
-        
+
+        # Predict capabilities (handle batched input)
+        success_prob_tensor = self.capability_predictor['success_prob'](task_features)
+        expected_time_tensor = self.capability_predictor['expected_time'](task_features)
+        confidence_tensor = self.capability_predictor['confidence'](task_features)
+
+        # Convert to scalar by taking mean if batched
+        if success_prob_tensor.numel() > 1:
+            success_prob = success_prob_tensor.mean().item()
+            expected_time = expected_time_tensor.mean().item()
+            confidence = confidence_tensor.mean().item()
+        else:
+            success_prob = success_prob_tensor.item()
+            expected_time = expected_time_tensor.item()
+            confidence = confidence_tensor.item()
+
         # Decision logic
         can_solve = success_prob > threshold and confidence > 0.5
-        
+
         if not can_solve:
             if success_prob <= threshold:
                 reason = f"Task too difficult (success probability: {success_prob:.2f})"
@@ -110,7 +120,7 @@ class SelfModel(nn.Module):
                 reason = f"Low confidence in assessment (confidence: {confidence:.2f})"
         else:
             reason = f"Can solve with {success_prob:.2f} probability in ~{expected_time:.1f} steps"
-        
+
         metrics = {
             'success_probability': success_prob,
             'expected_time': expected_time,

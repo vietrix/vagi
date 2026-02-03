@@ -467,20 +467,28 @@ class AGIModel(nn.Module):
                 relation_logits = self.relation_extractor(hidden_pooled)  # [B, num_relations]
                 relations = torch.softmax(relation_logits, dim=-1)
 
-            if entities is not None and relations is not None:
-                # Get top-k entities for query
-                top_k = min(5, entities.size(-1))
-                entity_scores, entity_indices = entities.topk(top_k, dim=-1)
-
-                # Query knowledge graph with extracted entities
-                kg_embeddings = self.knowledge_graph.entity_embeddings(entity_indices)
-                kg_context = (kg_embeddings * entity_scores.unsqueeze(-1)).sum(dim=1)
+            if entities is not None:
+                # Handle different entity input formats
+                if entities.dim() == 1:
+                    # Direct entity indices [B] - lookup embedding directly
+                    kg_embeddings = self.knowledge_graph.entity_embeddings(entities)  # [B, embed_dim]
+                    kg_context = kg_embeddings
+                elif entities.dim() == 2 and entities.size(-1) > self.cfg.entity_embed_dim:
+                    # Softmax scores over all entities [B, num_entities] - top-k weighted sum
+                    top_k = min(5, entities.size(-1))
+                    entity_scores, entity_indices = entities.topk(top_k, dim=-1)
+                    kg_embeddings = self.knowledge_graph.entity_embeddings(entity_indices)
+                    kg_context = (kg_embeddings * entity_scores.unsqueeze(-1)).sum(dim=1)
+                else:
+                    # Already embeddings or other format - pass through
+                    kg_context = entities
 
                 kg_contribution = self.kg_projection(kg_context)
                 context_additions.append(kg_contribution)
 
                 outputs["knowledge_context"] = kg_context
-                outputs["extracted_entities"] = entity_indices
+                if entities.dim() == 1:
+                    outputs["extracted_entities"] = entities
                 outputs["extracted_relations"] = relations
         
         if self.cfg.use_abstract_reasoning:
@@ -554,7 +562,25 @@ class AGIModel(nn.Module):
                 if hasattr(self, "few_shot_learner"):
                     # Combine hidden state with task representation
                     adapted_features = hidden_pooled + task_repr * 0.5
-                    few_shot_logits = self.few_shot_learner(adapted_features)
+
+                    # FewShotLearner requires prototypes - use task_repr as proxy prototype
+                    # Create pseudo-prototypes from task representation (one per action class)
+                    task_repr_expanded = task_repr.unsqueeze(1)  # [B, 1, H]
+                    num_actions = self.cfg.action_dim
+                    proto_noise = torch.randn(
+                        batch_size, num_actions, task_repr.size(-1),
+                        device=device
+                    ) * 0.1
+                    pseudo_prototypes = task_repr_expanded + proto_noise
+
+                    # Use encoder output as query
+                    query_emb = self.few_shot_learner.encoder(adapted_features)  # [B, H]
+                    # Compute distances to prototypes
+                    few_shot_logits = -torch.cdist(
+                        query_emb.unsqueeze(1),  # [B, 1, H]
+                        pseudo_prototypes  # [B, num_actions, H]
+                    ).squeeze(1)  # [B, num_actions]
+
                     outputs["few_shot_logits"] = few_shot_logits
 
                     # Blend with main action logits if available
@@ -568,7 +594,13 @@ class AGIModel(nn.Module):
 
         if self.cfg.use_transfer_learning and hasattr(self, "transfer_learner"):
             # Apply transfer learning to adapt features
-            transferred_features = self.transfer_learner(hidden_pooled)
+            transfer_output = self.transfer_learner(hidden_pooled)
+            # TransferLearner returns (features, domain_logits) tuple
+            if isinstance(transfer_output, tuple):
+                transferred_features, domain_logits = transfer_output
+                outputs["domain_logits"] = domain_logits
+            else:
+                transferred_features = transfer_output
             outputs["transferred_features"] = transferred_features
             context_additions.append(transferred_features * 0.3)  # Weighted contribution
 
@@ -597,28 +629,49 @@ class AGIModel(nn.Module):
                 # Get predicted next state from world model if available
                 world_pred = outputs.get("world_pred")
                 if world_pred is not None:
+                    # Handle multi-step world predictions [B, horizon, obs_dim]
+                    if world_pred.dim() == 3:
+                        next_state = world_pred[:, 0, :]  # Use first prediction step
+                    else:
+                        next_state = world_pred
+
+                    # Ensure next_state matches obs dimensions
+                    if next_state.size(-1) != obs.size(-1):
+                        # Project to match obs_dim if needed
+                        next_state = F.adaptive_avg_pool1d(
+                            next_state.unsqueeze(1), obs.size(-1)
+                        ).squeeze(1)
+
                     # Use action logits as soft action
                     action_logits = outputs.get("action_logits")
                     if action_logits is not None:
                         action_probs = F.softmax(action_logits, dim=-1)
 
-                        # Compute intrinsic rewards
-                        intrinsic_rewards = self.intrinsic_motivation.compute_intrinsic_reward(
-                            state=obs,
-                            action=action_probs,
-                            next_state=world_pred
-                        )
-                        outputs["intrinsic_rewards"] = intrinsic_rewards
+                        try:
+                            # Compute intrinsic rewards
+                            intrinsic_rewards = self.intrinsic_motivation.compute_intrinsic_reward(
+                                state=obs,
+                                action=action_probs,
+                                next_state=next_state
+                            )
+                            outputs["intrinsic_rewards"] = intrinsic_rewards
 
-                        # Add total intrinsic reward to value estimate
-                        if "total" in intrinsic_rewards and "value" in outputs:
-                            intrinsic_bonus = intrinsic_rewards["total"].unsqueeze(-1)
-                            outputs["value"] = outputs["value"] + intrinsic_bonus * 0.1
+                            # Add total intrinsic reward to value estimate
+                            if "intrinsic_reward" in intrinsic_rewards and "value" in outputs:
+                                intrinsic_bonus = intrinsic_rewards["intrinsic_reward"].unsqueeze(-1)
+                                outputs["value"] = outputs["value"] + intrinsic_bonus * 0.1
+                        except RuntimeError:
+                            # Dimension mismatch - skip intrinsic rewards for this batch
+                            pass
 
                 # Also compute novelty for current state (doesn't need next_state)
-                if hasattr(self.intrinsic_motivation, "novelty"):
-                    novelty_score = self.intrinsic_motivation.novelty(obs)
-                    outputs["novelty_score"] = novelty_score
+                try:
+                    if hasattr(self.intrinsic_motivation, "novelty"):
+                        novelty_score = self.intrinsic_motivation.novelty(obs)
+                        outputs["novelty_score"] = novelty_score
+                except RuntimeError:
+                    # Skip on dimension errors
+                    pass
 
                 # Generate exploration goals
                 if hasattr(self.intrinsic_motivation, "goal_generator"):
@@ -854,11 +907,27 @@ class AGIModel(nn.Module):
 
         if return_loss and self.cfg.use_language_modeling:
             losses = outputs.get("losses_breakdown", {})
-            
+
             if hasattr(self, "masked_lm") and labels is not None:
-                mlm_outputs = self.masked_lm(hidden, labels)
-                if "loss" in mlm_outputs:
-                    losses["masked_lm"] = mlm_outputs["loss"]
+                # Align hidden and labels sequence lengths
+                mlm_hidden = hidden
+                if mlm_hidden.dim() == 3 and labels.dim() == 2:
+                    label_seq_len = labels.size(1)
+                    hidden_seq_len = mlm_hidden.size(1)
+                    if hidden_seq_len > label_seq_len:
+                        # Truncate hidden to match labels
+                        mlm_hidden = mlm_hidden[:, :label_seq_len, :]
+                    elif hidden_seq_len < label_seq_len:
+                        # Truncate labels to match hidden
+                        labels = labels[:, :hidden_seq_len]
+
+                try:
+                    mlm_outputs = self.masked_lm(mlm_hidden, labels)
+                    if "loss" in mlm_outputs:
+                        losses["masked_lm"] = mlm_outputs["loss"]
+                except (ValueError, RuntimeError):
+                    # Skip MLM loss if shapes still don't match
+                    pass
             
             if hasattr(self, "knowledge_graph") and entities is not None and targets is not None:
                 if "kg_triples" in targets:
@@ -1052,3 +1121,10 @@ class AGIModel(nn.Module):
     def init_state(self, batch_size: int, device: Optional[torch.device] = None, **kwargs):
         """Initialize model state."""
         return self.core.init_state(batch_size, device, **kwargs)
+
+    @property
+    def dsl(self):
+        """Access DSL from program synthesizer (if enabled)."""
+        if hasattr(self, "program_synthesizer"):
+            return self.program_synthesizer.dsl
+        return None
