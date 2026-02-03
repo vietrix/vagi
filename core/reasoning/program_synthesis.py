@@ -191,6 +191,37 @@ class Program:
         elif op == PrimitiveOp.CASE:
             idx, cases = params
             return cases[idx] if 0 <= idx < len(cases) else cases[-1]
+        elif op == PrimitiveOp.LOOP:
+            # LOOP: (condition_func, body_func, max_iter) -> repeatedly apply body while condition
+            cond_func, body_func, max_iter = params if len(params) == 3 else (params[0], params[1], 100)
+            result = data
+            for _ in range(max_iter):
+                if not cond_func(result):
+                    break
+                result = body_func(result)
+            return result
+        elif op == PrimitiveOp.RECURSE:
+            # RECURSE: (base_case_check, base_val, recursive_func, max_depth) -> recursive computation
+            base_check, base_val, rec_func = params[:3]
+            max_depth = params[3] if len(params) > 3 else 50
+            def recurse_helper(val, depth):
+                if depth >= max_depth or base_check(val):
+                    return base_val(val) if callable(base_val) else base_val
+                return rec_func(val, lambda v: recurse_helper(v, depth + 1))
+            return recurse_helper(data, 0)
+        elif op == PrimitiveOp.UNFOLD:
+            # UNFOLD: (seed, condition, generator) -> generate list from seed
+            seed, cond_func, gen_func = params
+            result = []
+            current = seed if seed is not None else data
+            max_iter = 1000  # Safety limit
+            for _ in range(max_iter):
+                if not cond_func(current):
+                    break
+                value, next_state = gen_func(current)
+                result.append(value)
+                current = next_state
+            return result
 
         # Constants
         elif op == PrimitiveOp.CONST_ZERO:
