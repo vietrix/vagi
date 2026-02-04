@@ -1,4 +1,4 @@
-"""Abstract reasoning and causal inference.
+"""Abstract reasoning, causal inference, and System 2 thinking.
 
 This module provides comprehensive reasoning capabilities:
 
@@ -15,6 +15,17 @@ Abstract Reasoning (abstract.py):
 - Analogy matching with dimension checking (5.8)
 - Temporal ordering with Granger causality (5.9)
 - Counterfactual plausibility scoring (5.10)
+
+MCTS Engine (mcts_engine.py):
+- Monte Carlo Tree Search for System 2 reasoning
+- UCT-based tree navigation
+- Policy/Value model integration
+- Parallel and beam search variants
+
+Code Interpreter (code_interpreter.py):
+- Secure sandboxed Python execution
+- Code-as-reasoning for verification
+- ReAct-style agent loops
 """
 
 from .abstract import (
@@ -61,6 +72,36 @@ from .program_synthesis import (
     ResourceLimitError,
     TypeMismatchError,
 )
+from .mcts_engine import (
+    # MCTS Core
+    MCTSConfig,
+    MCTSNode,
+    MCTSEngine,
+    # Policy/Value interfaces
+    PolicyModel,
+    ValueModel,
+    LLMPolicyModel,
+    VerifierValueModel,
+    SelfEvalValueModel,
+    # Variants
+    BeamSearchMCTS,
+    ParallelMCTS,
+)
+from .code_interpreter import (
+    # Config and results
+    CodeInterpreterConfig,
+    ExecutionResult,
+    # Core components
+    CodeParser,
+    SecurityChecker,
+    CodeInterpreter,
+    # Executors
+    RestrictedExecutor,
+    SubprocessExecutor,
+    # Agents
+    ReActCodeInterpreter,
+    TorchCodeInterpreter,
+)
 
 __all__ = [
     # Abstract reasoning
@@ -95,4 +136,25 @@ __all__ = [
     "TimeoutError",
     "ResourceLimitError",
     "TypeMismatchError",
+    # MCTS Engine (System 2 Reasoning)
+    "MCTSConfig",
+    "MCTSNode",
+    "MCTSEngine",
+    "PolicyModel",
+    "ValueModel",
+    "LLMPolicyModel",
+    "VerifierValueModel",
+    "SelfEvalValueModel",
+    "BeamSearchMCTS",
+    "ParallelMCTS",
+    # Code Interpreter
+    "CodeInterpreterConfig",
+    "ExecutionResult",
+    "CodeParser",
+    "SecurityChecker",
+    "CodeInterpreter",
+    "RestrictedExecutor",
+    "SubprocessExecutor",
+    "ReActCodeInterpreter",
+    "TorchCodeInterpreter",
 ]
