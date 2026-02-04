@@ -1,0 +1,16 @@
+{"id": "math_001", "type": "math", "question": "If a train travels 120 km in 2 hours, and then 180 km in 3 hours, what is its average speed for the entire journey?", "answer": "60 km/h"}
+{"id": "math_002", "type": "math", "question": "A store offers a 20% discount on a $150 item. If there's an additional 10% off for members, what is the final price for a member?", "answer": "$108"}
+{"id": "math_003_vi", "type": "math", "question": "Một cửa hàng bán 3 loại trái cây: táo giá 25.000đ/kg, cam giá 30.000đ/kg, và nho giá 45.000đ/kg. Nếu mua 2kg táo, 1.5kg cam và 1kg nho, tổng tiền phải trả là bao nhiêu?", "answer": "140.000đ"}
+{"id": "math_004_vi", "type": "math", "question": "Một hình chữ nhật có chiều dài gấp đôi chiều rộng. Nếu chu vi là 36cm, hãy tính diện tích hình chữ nhật.", "answer": "72 cm²"}
+{"id": "math_005_vi", "type": "math", "question": "Bạn An có 150.000đ. An mua một quyển sách giá 45.000đ và một cây bút giá 12.000đ. Hỏi An còn lại bao nhiêu tiền?", "answer": "93.000đ"}
+{"id": "coding_001", "type": "coding", "question": "Write a Python function `is_prime(n)` that returns True if n is a prime number and False otherwise. Test it with n=17 and print the result.", "expected_output": "True"}
+{"id": "coding_002", "type": "coding", "question": "Write a Python function `fibonacci(n)` that returns the nth Fibonacci number (0-indexed, so fibonacci(0)=0, fibonacci(1)=1). Print fibonacci(10).", "expected_output": "55"}
+{"id": "coding_003_vi", "type": "coding", "question": "Viết hàm Python `tinh_giai_thua(n)` để tính n! (giai thừa). In kết quả của tinh_giai_thua(5).", "expected_output": "120"}
+{"id": "coding_004_vi", "type": "coding", "question": "Viết hàm Python `dem_nguyen_am(chuoi)` đếm số nguyên âm (a, e, i, o, u, ă, â, ê, ô, ơ, ư) trong một chuỗi tiếng Việt. Kiểm tra với chuỗi 'Xin chào Việt Nam' và in kết quả.", "expected_output": "6"}
+{"id": "riddle_001", "type": "riddle", "question": "I have cities, but no houses live in them. I have mountains, but no trees grow on them. I have water, but no fish swim in it. I have roads, but no cars drive on them. What am I?", "answer": "A map"}
+{"id": "riddle_002_vi", "type": "riddle", "question": "Cái gì đi bằng bốn chân vào buổi sáng, hai chân vào buổi trưa, và ba chân vào buổi chiều?", "answer": "Con người (bò khi còn bé, đi hai chân khi trưởng thành, chống gậy khi già)"}
+{"id": "riddle_003_vi", "type": "riddle", "question": "Cái gì càng khô càng ướt?", "answer": "Khăn tắm"}
+{"id": "logic_001", "type": "logic", "question": "Three friends (Alice, Bob, Carol) each have a different pet (cat, dog, bird). Alice doesn't have a dog. The person with the bird is not Carol. Bob doesn't have a cat. Who has which pet?", "answer": "Alice has cat, Bob has bird, Carol has dog"}
+{"id": "logic_002_vi", "type": "logic", "question": "Ba người bạn An, Bình, Cường mỗi người thích một môn thể thao khác nhau: bóng đá, bóng rổ, cầu lông. An không thích bóng đá. Người thích cầu lông không phải Cường. Bình không thích bóng rổ. Hỏi mỗi người thích môn gì?", "answer": "An thích cầu lông, Bình thích bóng đá, Cường thích bóng rổ"}
+{"id": "logic_003_vi", "type": "logic", "question": "Nếu hôm nay là thứ Tư, thì 100 ngày sau là thứ mấy?", "answer": "Thứ Sáu"}
+{"id": "math_006_vi", "type": "math", "question": "Tính tổng các số nguyên tố nhỏ hơn 30.", "answer": "129"}
