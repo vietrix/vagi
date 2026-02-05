@@ -151,6 +151,7 @@ class PatchEmbedding(nn.Module):
         in_channels: int = 3,
         embed_dim: int = 768,
         use_cls_token: bool = True,
+        use_pos_embed: bool = True,
     ) -> None:
         super().__init__()
         self.image_size = image_size
@@ -158,6 +159,7 @@ class PatchEmbedding(nn.Module):
         self.num_patches = (image_size // patch_size) ** 2
         self.embed_dim = embed_dim
         self.use_cls_token = use_cls_token
+        self.use_pos_embed = use_pos_embed
 
         self.projection = nn.Conv2d(
             in_channels,
@@ -172,9 +174,12 @@ class PatchEmbedding(nn.Module):
             nn.init.trunc_normal_(self.cls_token, std=0.02)
 
         # Learnable position embeddings including CLS position
-        num_positions = self.num_patches + 1 if use_cls_token else self.num_patches
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_positions, embed_dim))
-        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        if use_pos_embed:
+            num_positions = self.num_patches + 1 if use_cls_token else self.num_patches
+            self.pos_embed = nn.Parameter(torch.zeros(1, num_positions, embed_dim))
+            nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        else:
+            self.pos_embed = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Convert image to patch embeddings with optional CLS token.
@@ -195,7 +200,8 @@ class PatchEmbedding(nn.Module):
             x = torch.cat([cls_tokens, x], dim=1)  # [B, num_patches + 1, embed_dim]
 
         # Add position embeddings
-        x = x + self.pos_embed
+        if self.use_pos_embed and self.pos_embed is not None:
+            x = x + self.pos_embed
 
         return x
 
@@ -269,7 +275,12 @@ class VisionTransformerEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.patch_embed = PatchEmbedding(
-            image_size, patch_size, in_channels, embed_dim
+            image_size,
+            patch_size,
+            in_channels,
+            embed_dim,
+            use_cls_token=False,
+            use_pos_embed=False,
         )
         
         num_patches = self.patch_embed.num_patches

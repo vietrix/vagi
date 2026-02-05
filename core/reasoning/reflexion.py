@@ -137,6 +137,37 @@ class ReflexionState:
 
 
 # ============================================================================
+# Memory Container
+# ============================================================================
+
+@dataclass
+class ReflexionMemory:
+    """Lightweight container for reflexion states."""
+    entries: List[ReflexionState] = field(default_factory=list)
+    max_entries: int = 10
+    decay: float = 0.9
+
+    def add(self, state: ReflexionState) -> None:
+        self.entries.append(state)
+        if len(self.entries) > self.max_entries:
+            self.entries = self.entries[-self.max_entries:]
+
+    def recent(self, n: int = 3) -> List[ReflexionState]:
+        if n <= 0:
+            return []
+        return list(self.entries[-n:])
+
+    def summary(self) -> str:
+        if not self.entries:
+            return "No reflections in memory."
+        lines = []
+        for idx, state in enumerate(self.entries, start=1):
+            if state.reflection:
+                lines.append(f"{idx}. {state.reflection}")
+        return "\n".join(lines) if lines else "No reflections in memory."
+
+
+# ============================================================================
 # Prompt Templates
 # ============================================================================
 

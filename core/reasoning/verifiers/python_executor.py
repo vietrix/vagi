@@ -30,7 +30,12 @@ import ast
 import sys
 import io
 import traceback
-import resource
+try:
+    import resource
+    RESOURCE_AVAILABLE = True
+except ImportError:  # Windows compatibility
+    resource = None
+    RESOURCE_AVAILABLE = False
 import signal
 import tempfile
 import textwrap
@@ -756,7 +761,7 @@ class PythonExecutor:
                 pass
 
         # Fall back to subprocess (Unix with resource limits)
-        if hasattr(resource, 'setrlimit'):
+        if RESOURCE_AVAILABLE and hasattr(resource, 'setrlimit'):
             return ExecutionBackend.SUBPROCESS
 
         # Last resort: inline with restricted builtins
