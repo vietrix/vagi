@@ -1,167 +1,191 @@
 #!/usr/bin/env python3
-"""
-Train vAGI model với JSONL dataset.
+"""Train vAGI with Unsloth + GRPO."""
 
-Usage:
-    python scripts/train.py --data data/train_dataset.jsonl --epochs 10
-    python scripts/train.py --data data/train_dataset.jsonl --epochs 5 --small
-"""
+from __future__ import annotations
 
 import argparse
+import inspect
 import json
-import os
+import math
 import sys
 from pathlib import Path
-
-# Fix output buffering
-if sys.platform == 'win32':
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
-sys.stdout = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
+from typing import Any, Iterable, List, Mapping
 
 import torch
-from torch import nn
-from torch.utils.data import Dataset, DataLoader
-from torch.optim import AdamW
+from datasets import Dataset
+from peft import LoraConfig
+from trl import GRPOConfig, GRPOTrainer
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+try:
+    from unsloth import FastLanguageModel, PatchFastRL, is_bfloat16_supported
+except ImportError as exc:  # pragma: no cover
+    raise SystemExit("Unsloth is required. Install `unsloth`.") from exc
 
-from core.agi import AGIModel
-from core.agi.config import AGIConfig, load_agi_small_config, load_agi_tiny_config
-from core.nlp import BytePairTokenizer
-
-
-class TextDataset(Dataset):
-    """Simple JSONL dataset."""
-
-    def __init__(self, path: str, tokenizer, max_len: int = 256):
-        self.tokenizer = tokenizer
-        self.max_len = max_len
-        self.samples = []
-
-        with open(path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    try:
-                        item = json.loads(line)
-                        text = item.get('input', '') + ' ' + item.get('output', '')
-                        self.samples.append(text)
-                    except:
-                        pass
-
-        print(f"Loaded {len(self.samples)} samples", flush=True)
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        ids = self.tokenizer.encode(self.samples[idx], max_length=self.max_len)
-        if len(ids) < self.max_len:
-            ids = ids + [0] * (self.max_len - len(ids))
-        return torch.tensor(ids[:self.max_len], dtype=torch.long)
+from train.rewards import correctness_reward, reflection_reward, xml_structure_reward
 
 
-def collate(batch):
-    return torch.stack(batch)
+SYSTEM_PROMPT = (
+    "You are vAGI, created by Vietrix. When solving problems, refer to yourself "
+    "as vAGI. Use <think> tags for reasoning."
+)
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Train vAGI')
-    parser.add_argument('--data', default='data/train_dataset.jsonl')
-    parser.add_argument('--output', default='checkpoints/model.pt')
-    parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--batch', type=int, default=2)
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--small', action='store_true', help='Use small config')
-    parser.add_argument('--tiny', action='store_true', help='Use tiny config (fast CPU)')
+def _load_jsonl(path: Path) -> List[dict[str, Any]]:
+    records: List[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            records.append(json.loads(line))
+    return records
+
+
+def _normalize_conversations(conversations: Iterable[Mapping[str, Any]]) -> List[dict[str, str]]:
+    messages: List[dict[str, str]] = []
+    for item in conversations:
+        role = str(item.get("role") or item.get("from") or "").lower()
+        content = str(item.get("content") or item.get("value") or "")
+        if not content:
+            continue
+        if role in {"human", "user"}:
+            role = "user"
+        elif role in {"assistant", "gpt", "bot"}:
+            role = "assistant"
+        elif role != "system":
+            role = "user"
+        messages.append({"role": role, "content": content})
+    return messages
+
+
+def _ensure_system_prompt(messages: List[dict[str, str]]) -> List[dict[str, str]]:
+    if not messages:
+        raise ValueError("Empty message list after normalization")
+    if messages[0].get("role") != "system":
+        messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+    return messages
+
+
+def _extract_answer(messages: List[dict[str, str]], fallback: str) -> str:
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            return msg.get("content", "")
+    return fallback
+
+
+def _normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    messages: List[dict[str, str]]
+    if "messages" in record:
+        messages = _normalize_conversations(record["messages"])
+    elif "conversations" in record:
+        messages = _normalize_conversations(record["conversations"])
+    elif "prompt" in record:
+        messages = _normalize_conversations(record["prompt"])
+    else:
+        user_text = record.get("input") or record.get("question") or record.get("prompt") or ""
+        assistant_text = record.get("output") or record.get("answer") or ""
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": str(user_text)},
+            {"role": "assistant", "content": str(assistant_text)},
+        ]
+    messages = _ensure_system_prompt(messages)
+    answer = record.get("answer") or _extract_answer(messages, "")
+    return {"prompt": messages, "answer": str(answer)}
+
+
+def _build_dataset(records: Iterable[Mapping[str, Any]]) -> Dataset:
+    normalized = [_normalize_record(record) for record in records]
+    if not normalized:
+        raise ValueError("No training records found in dataset.")
+    return Dataset.from_list(normalized)
+
+
+def _compute_max_steps(dataset_size: int, cfg: argparse.Namespace) -> int:
+    if cfg.max_steps is not None:
+        return cfg.max_steps
+    steps_per_epoch = math.ceil(
+        dataset_size / (cfg.batch_size * cfg.gradient_accumulation_steps)
+    )
+    return max(1, steps_per_epoch * cfg.epochs)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train vAGI with GRPO.")
+    parser.add_argument("--data", default="data/train_dataset.jsonl")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-7B-Instruct")
+    parser.add_argument("--output-dir", default="models/adapters")
+    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
+    parser.add_argument("--max-seq-length", type=int, default=4096)
+    parser.add_argument("--max-completion-length", type=int, default=2048)
+    parser.add_argument("--num-generations", type=int, default=8)
+    parser.add_argument("--learning-rate", type=float, default=5e-6)
+    parser.add_argument("--logging-steps", type=int, default=1)
+    parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--load-in-4bit", action="store_true")
     args = parser.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}", flush=True)
+    data_path = Path(args.data)
+    if not data_path.exists():
+        raise FileNotFoundError(f"Dataset not found: {data_path}")
 
-    # Config & Model
-    if args.tiny:
-        config = load_agi_tiny_config()
-    elif args.small:
-        config = load_agi_small_config()
+    records = _load_jsonl(data_path)
+    dataset = _build_dataset(records)
+
+    PatchFastRL("GRPO", FastLanguageModel)
+    dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=args.model,
+        max_seq_length=args.max_seq_length,
+        dtype=dtype,
+        load_in_4bit=args.load_in_4bit,
+    )
+
+    max_prompt_length = max(args.max_seq_length - args.max_completion_length, 1)
+    max_steps = _compute_max_steps(len(dataset), args)
+
+    training_args = GRPOConfig(
+        learning_rate=args.learning_rate,
+        logging_steps=args.logging_steps,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        num_generations=args.num_generations,
+        max_prompt_length=max_prompt_length,
+        max_completion_length=args.max_completion_length,
+        max_steps=max_steps,
+        report_to="none",
+        output_dir=args.output_dir,
+    )
+
+    peft_config = LoraConfig(
+        r=16,
+        lora_alpha=32,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+
+    trainer_kwargs: dict[str, Any] = {
+        "model": model,
+        "args": training_args,
+        "reward_funcs": [correctness_reward, xml_structure_reward, reflection_reward],
+        "train_dataset": dataset,
+        "peft_config": peft_config,
+    }
+    signature = inspect.signature(GRPOTrainer.__init__)
+    if "processing_class" in signature.parameters:
+        trainer_kwargs["processing_class"] = tokenizer
     else:
-        config = AGIConfig()
-    tokenizer = BytePairTokenizer(vocab_size=config.vocab_size)
+        trainer_kwargs["tokenizer"] = tokenizer
 
-    print("Loading data...", flush=True)
-
-    # Load raw texts for tokenizer training
-    raw_texts = []
-    with open(args.data, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.strip():
-                try:
-                    item = json.loads(line)
-                    text = item.get('input', '') + ' ' + item.get('output', '')
-                    raw_texts.append(text)
-                except:
-                    pass
-
-    # Train tokenizer on dataset
-    print(f"Training tokenizer on {len(raw_texts)} texts...", flush=True)
-    tokenizer.train(raw_texts, num_merges=1000)
-    print(f"Tokenizer vocab size: {len(tokenizer.vocab)}", flush=True)
-
-    dataset = TextDataset(args.data, tokenizer)
-    loader = DataLoader(dataset, batch_size=args.batch, shuffle=True, collate_fn=collate)
-
-    print("Creating model...", flush=True)
-    model = AGIModel(config).to(device)
-    params = sum(p.numel() for p in model.parameters())
-    print(f"Parameters: {params:,}", flush=True)
-
-    optimizer = AdamW(model.parameters(), lr=args.lr)
-
-    # Train
-    print(f"\nTraining for {args.epochs} epochs...", flush=True)
-    model.train()
-
-    for epoch in range(1, args.epochs + 1):
-        total_loss = 0.0
-        for batch in loader:
-            batch = batch.to(device)
-
-            optimizer.zero_grad()
-            out = model(input_ids=batch, mode='train')
-
-            # Language modeling loss
-            logits = out.get('text_logits')
-            if logits is None:
-                continue
-
-            # Next token prediction - align shapes
-            seq_len = batch.size(1)
-            pred = logits[:, :seq_len-1, :].contiguous()
-            target = batch[:, 1:].contiguous()
-
-            loss = nn.CrossEntropyLoss(ignore_index=0)(
-                pred.view(-1, pred.size(-1)),
-                target.view(-1)
-            )
-
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            total_loss += loss.item()
-
-        avg = total_loss / len(loader)
-        print(f"Epoch {epoch}/{args.epochs} - Loss: {avg:.4f}", flush=True)
-
-    # Save model and tokenizer
-    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'config': config,
-        'tokenizer_vocab': tokenizer.vocab,
-        'tokenizer_merges': tokenizer.merges,
-    }, args.output)
-    print(f"\nSaved to {args.output}", flush=True)
+    trainer = GRPOTrainer(**trainer_kwargs)
+    trainer.train()
+    trainer.save_model(args.output_dir)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     main()
