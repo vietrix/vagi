@@ -7,7 +7,10 @@ from threading import Lock
 from typing import Dict, Optional
 from uuid import uuid4
 
-from vagi_core import RecurrentState
+try:
+    from vagi_core import RecurrentState
+except ModuleNotFoundError:
+    from core.base import RecurrentState
 
 
 @dataclass
