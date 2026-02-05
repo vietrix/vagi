@@ -1,20 +1,261 @@
-"""Minimal agent loop for vAGI."""
+"""Cognitive agent loop for vAGI."""
 
 from __future__ import annotations
 
 import argparse
-from collections import Counter
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+import re
+from typing import Callable, List, Optional, Protocol, Sequence
 
 import torch
 
-from core.memory.generative_memory import MemoryStream, ReflectionLoop, ReflectionLoopConfig
+from core.cognition import EmotionEngine, PADState
+from core.memory.generative_memory import (
+    MemoryObject,
+    MemoryStream,
+    ReflectionLoop,
+    ReflectionLoopConfig,
+)
+from core.reasoning.curiosity import CuriosityDecision, CuriosityGate, QuestionGenerator
 from envs.toy_env import ToyEnv
 from runtime.logging import JsonlWriter
 from runtime.privacy import apply_retention, delete_logs
 from scripts.utils import set_deterministic
 from vagi_core import VAGIConfig, VAGICore
+
+
+QuickInferFn = Callable[[str], str]
+GenerateFn = Callable[[str], str]
+
+
+class ModelEngine(Protocol):
+    def quick_infer(self, prompt: str) -> str:
+        ...
+
+    def generate(self, prompt: str) -> str:
+        ...
+
+
+@dataclass
+class CognitiveAgentConfig:
+    retrieval_top_k: int = 5
+    reflection_min_memories: int = 5
+    system_prompt_template: str = (
+        "You are a cognitive agent.\n"
+        "Current PAD Mood: {pad}\n"
+        "Tone Instruction: {tone}\n"
+        "Retrieved Memories:\n{memories}\n"
+    )
+    draft_prompt_template: str = (
+        "Draft a concise response based on the user input and context.\n\n"
+        "User Input:\n{user_input}\n\n"
+        "Context:\n{context}\n\n"
+        "Draft:"
+    )
+    uncertainty_prompt_template: str = (
+        "Estimate uncertainty for answering the user input with given context.\n"
+        "Return a single float between 0.0 and 1.0.\n\n"
+        "User Input:\n{user_input}\n\n"
+        "Context:\n{context}\n\n"
+        "Draft:\n{draft}\n\n"
+        "Uncertainty:"
+    )
+    importance_prompt_template: str = (
+        "Rate the importance of this interaction for long-term memory.\n"
+        "Return a single float between 0.0 and 1.0.\n\n"
+        "User Input:\n{user_input}\n\n"
+        "Agent Response:\n{response}\n\n"
+        "Importance:"
+    )
+
+
+@dataclass
+class CognitiveActResult:
+    text: str
+    is_question: bool
+    mood: PADState
+    memories: List[MemoryObject] = field(default_factory=list)
+    prompt: str = ""
+    curiosity: Optional[CuriosityDecision] = None
+
+
+class CognitiveAgent:
+    def __init__(
+        self,
+        model_engine: ModelEngine,
+        *,
+        memory_store_path: Optional[Path] = None,
+        memory_stream: Optional[MemoryStream] = None,
+        reflection_config: Optional[ReflectionLoopConfig] = None,
+        emotion_engine: Optional[EmotionEngine] = None,
+        curiosity_gate: Optional[CuriosityGate] = None,
+        quick_infer_fn: Optional[QuickInferFn] = None,
+        generate_fn: Optional[GenerateFn] = None,
+        executor: Optional[ThreadPoolExecutor] = None,
+        config: Optional[CognitiveAgentConfig] = None,
+    ) -> None:
+        self.model_engine = model_engine
+        self.memory_store_path = memory_store_path
+        self.quick_infer: QuickInferFn = quick_infer_fn or model_engine.quick_infer
+        self.generate_fn: GenerateFn = generate_fn or model_engine.generate
+        self.generative_memory = memory_stream or MemoryStream()
+        self.emotion_engine = emotion_engine or EmotionEngine(llm_fn=self.quick_infer)
+        question_generator = QuestionGenerator(llm_fn=self.quick_infer)
+        self.curiosity_gate = curiosity_gate or CuriosityGate(question_generator=question_generator)
+        self.config = config or CognitiveAgentConfig()
+        self._executor = executor or ThreadPoolExecutor(max_workers=2)
+        self._pending_futures: List[Future[Optional[MemoryObject]]] = []
+        self._recent_context: str = ""
+        self._reflection_loop = ReflectionLoop(
+            self.generative_memory,
+            llm_fn=self.quick_infer,
+            config=reflection_config or ReflectionLoopConfig(
+                min_memories=self.config.reflection_min_memories,
+            ),
+        )
+
+    def act(self, user_input: str) -> CognitiveActResult:
+        # Step 1: Perception (Emotion Update)
+        self.emotion_engine.update_state(
+            user_input=user_input,
+            recent_context=self._recent_context,
+            llm_fn=self.quick_infer,
+        )
+
+        # Step 2: Retrieval (Context)
+        memories = self.generative_memory.retrieve(
+            user_input,
+            top_k=self.config.retrieval_top_k,
+        )
+        context_text = MemoryStream.format_memories(memories)
+
+        # Step 3: Curiosity Check
+        draft = self.quick_infer(
+            self.config.draft_prompt_template.format(
+                user_input=user_input,
+                context=context_text,
+            )
+        )
+        curiosity = self._curiosity_check(user_input, context_text, draft)
+        if curiosity.should_ask:
+            self._schedule_memory_update(user_input, curiosity.question or "")
+            return CognitiveActResult(
+                text=curiosity.question or "",
+                is_question=True,
+                mood=self.emotion_engine.state,
+                memories=memories,
+                prompt="",
+                curiosity=curiosity,
+            )
+
+        # Step 4: Prompt Construction
+        system_prompt = self._build_system_prompt(memories)
+        full_prompt = f"{system_prompt}\nUser: {user_input}\nAssistant:"
+
+        # Step 5: Reasoning & Generation
+        response = self.generate_fn(full_prompt)
+
+        # Step 6: Reflection (async save + reflect)
+        self._schedule_memory_update(user_input, response)
+        self._recent_context = context_text
+
+        return CognitiveActResult(
+            text=response,
+            is_question=False,
+            mood=self.emotion_engine.state,
+            memories=memories,
+            prompt=full_prompt,
+            curiosity=curiosity,
+        )
+
+    def _curiosity_check(self, user_input: str, context: str, draft: str) -> CuriosityDecision:
+        if not context.strip():
+            question = self.curiosity_gate.question_generator.generate(draft, context=context)
+            return CuriosityDecision(
+                should_ask=True,
+                question=question,
+                perplexity=1.0,
+                uncertainty=1.0,
+                source="missing_context",
+            )
+        uncertainty = self._estimate_uncertainty(user_input, context, draft)
+        return self.curiosity_gate.check(
+            user_input,
+            context,
+            draft=draft,
+            explicit_uncertainty=uncertainty,
+        )
+
+    def _build_system_prompt(self, memories: Sequence[MemoryObject]) -> str:
+        pad = self.emotion_engine.state
+        pad_str = f"[{pad.pleasure:.2f}, {pad.arousal:.2f}, {pad.dominance:.2f}]"
+        tone = self._tone_instruction(self.emotion_engine.current_mood_label())
+        memories_block = MemoryStream.format_memories(memories) or "- (none)"
+        return self.config.system_prompt_template.format(
+            pad=pad_str,
+            tone=tone,
+            memories=memories_block,
+        )
+
+    def _tone_instruction(self, mood_label: str) -> str:
+        label = mood_label.strip().lower()
+        if label == "frustrated":
+            return "Be frustrated but helpful."
+        if label == "excited":
+            return "Be excited and helpful."
+        if label == "calm":
+            return "Be calm and helpful."
+        if label == "sad":
+            return "Be gentle and supportive."
+        if label == "confident":
+            return "Be confident and helpful."
+        if label == "anxious":
+            return "Be cautious but helpful."
+        return "Be neutral and helpful."
+
+    def _estimate_uncertainty(self, user_input: str, context: str, draft: str) -> float:
+        prompt = self.config.uncertainty_prompt_template.format(
+            user_input=user_input,
+            context=context,
+            draft=draft,
+        )
+        response = self.quick_infer(prompt)
+        return _parse_scalar(response, default=0.0)
+
+    def _estimate_importance(self, user_input: str, response: str) -> float:
+        prompt = self.config.importance_prompt_template.format(
+            user_input=user_input,
+            response=response,
+        )
+        estimate = self.quick_infer(prompt)
+        return _parse_scalar(estimate, default=0.5)
+
+    def _schedule_memory_update(self, user_input: str, response: str) -> None:
+        future = self._executor.submit(self._save_and_reflect, user_input, response)
+        self._pending_futures.append(future)
+
+    def _save_and_reflect(self, user_input: str, response: str) -> Optional[MemoryObject]:
+        importance = self._estimate_importance(user_input, response)
+        memory = self.generative_memory.add_memory(
+            content=f"User: {user_input}\nAssistant: {response}",
+            importance_score=importance,
+        )
+        if len(self.generative_memory.memories) >= self.config.reflection_min_memories:
+            self._reflection_loop.maybe_reflect(step=len(self.generative_memory.memories))
+        return memory
+
+
+def _parse_scalar(text: str, *, default: float) -> float:
+    match = re.search(r"[-+]?\d*\.?\d+", text)
+    if not match:
+        return default
+    try:
+        value = float(match.group(0))
+    except ValueError:
+        return default
+    return max(0.0, min(1.0, value))
 
 
 def run_episode(
@@ -102,32 +343,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--privacy-opt-in", action="store_true")
     parser.add_argument("--retain-days", type=int, default=7)
     parser.add_argument("--delete-logs", action="store_true")
-    parser.add_argument("--enable-reflection", action="store_true")
-    parser.add_argument("--reflection-interval", type=int, default=5)
-    parser.add_argument("--reflection-window", type=int, default=20)
-    parser.add_argument("--reflection-min-memories", type=int, default=5)
     return parser.parse_args()
-
-
-def _heuristic_reflector(prompt: str) -> str:
-    """Fallback reflector when no external LLM is wired in."""
-    actions = []
-    rewards = []
-    for line in prompt.splitlines():
-        if "action=" not in line or "reward=" not in line:
-            continue
-        try:
-            action_str = line.split("action=")[1].split()[0]
-            reward_str = line.split("reward=")[1].split()[0]
-            actions.append(int(action_str))
-            rewards.append(float(reward_str))
-        except (IndexError, ValueError):
-            continue
-    if not actions:
-        return "Insight: Not enough consistent signals yet."
-    top_action, _ = Counter(actions).most_common(1)[0]
-    avg_reward = sum(rewards) / max(1, len(rewards))
-    return f"Insight: Actions concentrate on {top_action} with avg reward {avg_reward:.3f}."
 
 
 def main() -> None:
@@ -152,19 +368,6 @@ def main() -> None:
     )
     model = VAGICore(cfg)
 
-    memory_stream = MemoryStream()
-    reflection_loop = None
-    if args.enable_reflection:
-        reflection_loop = ReflectionLoop(
-            memory_stream,
-            llm_fn=_heuristic_reflector,
-            config=ReflectionLoopConfig(
-                reflection_interval_steps=args.reflection_interval,
-                recent_window=args.reflection_window,
-                min_memories=args.reflection_min_memories,
-            ),
-        )
-
     log_path = Path(args.log)
     if args.delete_logs:
         delete_logs(log_path.parent)
@@ -175,8 +378,6 @@ def main() -> None:
         steps=args.steps,
         log_path=args.log,
         privacy_opt_in=args.privacy_opt_in,
-        memory_stream=memory_stream,
-        reflection_loop=reflection_loop,
     )
     print(f"Completed {steps} steps. Logs at {args.log}")
 

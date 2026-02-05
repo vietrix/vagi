@@ -80,6 +80,22 @@ class EmotionEngine:
         self.state = self.state.apply_delta(delta)
         return self.state
 
+    def update_state(
+        self,
+        user_input: str,
+        recent_context: str = "",
+        *,
+        llm_fn: Optional[Callable[[str], str]] = None,
+        now: Optional[float] = None,
+    ) -> PADState:
+        """Alias for update() to match external agent contracts."""
+        return self.update(
+            user_prompt=user_input,
+            recent_context=recent_context,
+            llm_fn=llm_fn,
+            now=now,
+        )
+
     def apply_homeostasis(self, *, now: Optional[float] = None) -> PADState:
         """Decay emotions toward neutral over time."""
         now = now or time.time()

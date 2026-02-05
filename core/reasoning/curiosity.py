@@ -141,3 +141,21 @@ class CuriosityGate:
             uncertainty=uncertainty,
             source=source,
         )
+
+    def check(
+        self,
+        user_input: str,
+        context: Optional[str] = None,
+        *,
+        draft: Optional[str] = None,
+        token_logprobs: Optional[Sequence[float]] = None,
+        explicit_uncertainty: Optional[float] = None,
+    ) -> CuriosityDecision:
+        """Compatibility wrapper for agent loops."""
+        draft_text = draft or user_input
+        return self.evaluate(
+            draft_text,
+            token_logprobs=token_logprobs,
+            explicit_uncertainty=explicit_uncertainty,
+            context=context,
+        )
