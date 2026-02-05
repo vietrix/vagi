@@ -117,6 +117,19 @@ def build_model_and_tokenizer(cfg: TrainConfig) -> tuple[Any, Any]:
 
 
 def compute_max_prompt_length(cfg: TrainConfig, tokenizer: Any, dataset: Dataset) -> int:
+    dataset_size = None
+    if hasattr(dataset, "num_rows"):
+        dataset_size = dataset.num_rows
+    elif hasattr(dataset, "__len__"):
+        try:
+            dataset_size = len(dataset)
+        except TypeError:
+            dataset_size = None
+    if dataset_size == 0:
+        raise ValueError(
+            "Training dataset is empty. Verify `dataset_name` and `dataset_split` point to "
+            "a split with examples before starting training."
+        )
     sample = dataset[0]
     prompt = sample["prompt"]
     if isinstance(prompt, list) and hasattr(tokenizer, "apply_chat_template"):
