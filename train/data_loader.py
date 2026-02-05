@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterable, Mapping, Sequence
 
 try:
@@ -26,6 +27,8 @@ _PROMPT_KEYS: Sequence[str] = (
 )
 _ANSWER_KEYS: Sequence[str] = ("answer", "solution", "output", "target", "final", "expected")
 
+logger = logging.getLogger(__name__)
+
 
 def format_grpo_dataset(
     dataset: Any,
@@ -34,12 +37,32 @@ def format_grpo_dataset(
 ) -> Any:
     """Normalize dataset rows to {prompt: [messages], answer: str}."""
     if Dataset is not None and isinstance(dataset, Dataset):
-        return dataset.map(
+        original_count = dataset.num_rows
+        filtered = dataset.filter(_has_valid_answer)
+        dropped = original_count - filtered.num_rows
+        if dropped:
+            logger.warning(
+                "Dropped %s rows with missing/blank answers during GRPO dataset formatting.",
+                dropped,
+            )
+        return filtered.map(
             lambda row: _normalize_row(row, system_prompt=system_prompt),
-            remove_columns=list(dataset.column_names),
+            remove_columns=list(filtered.column_names),
         )
     if isinstance(dataset, list):
-        return [_normalize_row(row, system_prompt=system_prompt) for row in dataset]
+        normalized_rows: list[dict[str, Any]] = []
+        dropped = 0
+        for row in dataset:
+            if not _has_valid_answer(row):
+                dropped += 1
+                continue
+            normalized_rows.append(_normalize_row(row, system_prompt=system_prompt))
+        if dropped:
+            logger.warning(
+                "Dropped %s rows with missing/blank answers during GRPO dataset formatting.",
+                dropped,
+            )
+        return normalized_rows
     raise TypeError("dataset must be a datasets.Dataset or a list of dict-like rows")
 
 
@@ -49,7 +72,9 @@ def _normalize_row(row: Mapping[str, Any], *, system_prompt: str) -> dict[str, A
         raise ValueError("Missing prompt field in dataset row")
     prompt_messages = _normalize_prompt(prompt_value, system_prompt=system_prompt)
     answer_value = _first_value(row, _ANSWER_KEYS)
-    answer_text = "" if answer_value is None else str(answer_value)
+    if answer_value is None:
+        raise ValueError("Missing answer field in dataset row")
+    answer_text = str(answer_value)
     return {"prompt": prompt_messages, "answer": answer_text}
 
 
@@ -64,6 +89,10 @@ def _first_value(row: Mapping[str, Any], keys: Iterable[str]) -> Any:
             continue
         return value
     return None
+
+
+def _has_valid_answer(row: Mapping[str, Any]) -> bool:
+    return _first_value(row, _ANSWER_KEYS) is not None
 
 
 def _normalize_prompt(prompt_value: Any, *, system_prompt: str) -> list[dict[str, str]]:

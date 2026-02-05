@@ -19,6 +19,8 @@ def correctness_reward(
 ) -> List[float]:
     target_answer = answer[0] if isinstance(answer, (list, tuple)) else answer
     target = _normalize_text(str(target_answer))
+    if not target:
+        return [0.0 for _ in completions]
     rewards: List[float] = []
     for completion in completions:
         text = _extract_text(completion)
