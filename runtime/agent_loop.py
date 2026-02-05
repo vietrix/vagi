@@ -19,7 +19,7 @@ from core.memory.generative_memory import (
     ReflectionLoop,
     ReflectionLoopConfig,
 )
-from core.memory.reflexion import ReflexionManager
+from core.memory import ReflexionManager
 from core.reasoning.curiosity import CuriosityDecision, CuriosityGate, QuestionGenerator
 from envs.toy_env import ToyEnv
 from runtime.logging import JsonlWriter
@@ -176,9 +176,9 @@ class CognitiveAgent:
         self.reflexion.add_turn(user_input, response)
         if self.reflexion.should_reflect():
             # TODO: move reflection into async background processing.
-            insights = self.reflexion.reflect(llm_fn=self.deep_infer)
+            insights = self.reflexion.reflect(llm_fn=self.model_engine.deep_infer)
             for insight in insights:
-                print(f"[System] Insight derived: {insight.content}")
+                print(f"[System] New Insight: {insight.content}")
             self._persist_insights(insights)
             self._insights_context = self._format_insights(insights)
         self._recent_context = context_text
@@ -272,7 +272,7 @@ class CognitiveAgent:
 
     def _resolve_insights_path(self, memory_store_path: Optional[Path]) -> Optional[Path]:
         if memory_store_path is None:
-            return Path("insights.json")
+            return Path("data") / "memory" / "insights.json"
         if memory_store_path.suffix.lower() == ".json":
             return memory_store_path
         return memory_store_path / "insights.json"
