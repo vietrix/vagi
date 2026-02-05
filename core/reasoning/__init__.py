@@ -152,6 +152,9 @@ from .verifiers import (
     verify_code,
     check_code_security,
 )
+from .engine import (
+    CogitoEngine,
+)
 
 __all__ = [
     # Abstract reasoning
@@ -248,4 +251,6 @@ __all__ = [
     "execute_python",
     "verify_code",
     "check_code_security",
+    # Cogito Engine
+    "CogitoEngine",
 ]
