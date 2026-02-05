@@ -124,6 +124,27 @@ from .curiosity import (
     CuriosityDecision,
     PerplexityResult,
 )
+from .planner import (
+    PlannerAgent,
+    PlannerConfig,
+    Task,
+    TaskQueue,
+    TaskStatus,
+)
+from .simulator import (
+    CounterfactualSimulator,
+    SimulatorConfig,
+    SafetyFlag,
+    NegativeOutcome,
+    SimulationResult,
+)
+from .orchestrator import (
+    Orchestrator,
+    OrchestratorConfig,
+    OrchestratorResult,
+    ExecutionResult,
+    Executor,
+)
 from .verifiers import (
     PythonExecutor,
     ExecutionBackend,
@@ -205,6 +226,22 @@ __all__ = [
     "PerplexityEstimator",
     "CuriosityDecision",
     "PerplexityResult",
+    # Planning + Simulation
+    "PlannerAgent",
+    "PlannerConfig",
+    "Task",
+    "TaskQueue",
+    "TaskStatus",
+    "CounterfactualSimulator",
+    "SimulatorConfig",
+    "SafetyFlag",
+    "NegativeOutcome",
+    "SimulationResult",
+    "Orchestrator",
+    "OrchestratorConfig",
+    "OrchestratorResult",
+    "ExecutionResult",
+    "Executor",
     # Python Executor
     "PythonExecutor",
     "ExecutionBackend",
