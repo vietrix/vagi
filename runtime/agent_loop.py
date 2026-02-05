@@ -119,9 +119,9 @@ class CognitiveAgent:
     def act(self, user_input: str) -> CognitiveActResult:
         # Step 1: Perception (Emotion Update)
         self.emotion_engine.update_state(
-            user_input=user_input,
+            user_input,
+            self.quick_infer,
             recent_context=self._recent_context,
-            llm_fn=self.quick_infer,
         )
 
         # Step 2: Retrieval (Context)

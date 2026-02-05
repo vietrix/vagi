@@ -56,6 +56,7 @@ class EmotionEngine:
         llm_fn: Optional[Callable[[str], str]] = None,
         decay_rate: float = 0.01,
     ) -> None:
+        self.pad_state = [0.0, 0.0, 0.0]
         self.state = PADState()
         self.llm_fn = llm_fn
         self.decay_rate = decay_rate
@@ -82,6 +83,26 @@ class EmotionEngine:
 
     def update_state(
         self,
+        input_text: str,
+        llm_fn: Optional[Callable[[str], str]] = None,
+        *,
+        recent_context: str = "",
+        decay: float = 0.9,
+        now: Optional[float] = None,
+    ) -> PADState:
+        """Update PAD state using LLM delta vector with homeostasis."""
+        self.apply_homeostasis(now=now)
+        prompt = self._build_delta_prompt(input_text, recent_context)
+        llm = llm_fn or self.llm_fn
+        if llm is None:
+            return self.state
+        response = llm(prompt)
+        delta = self._parse_delta_vector(response)
+        self._apply_delta(delta, decay=decay)
+        return self.state
+
+    def update_state_legacy(
+        self,
         user_input: str,
         recent_context: str = "",
         *,
@@ -107,7 +128,7 @@ class EmotionEngine:
 
     def current_mood_label(self) -> str:
         """Map PAD vector to a discrete mood label."""
-        pleasure, arousal, dominance = self.state.to_tuple()
+        pleasure, arousal, dominance = self._pad_tuple()
         if pleasure >= 0.3 and arousal >= 0.3:
             label = "Excited"
         elif pleasure <= -0.3 and arousal >= 0.3:
@@ -130,6 +151,23 @@ class EmotionEngine:
         mood = self.current_mood_label()
         return f"Current Mood: {mood}. Adjust your tone accordingly."
 
+    def get_tone_instruction(self) -> str:
+        """Map PAD values to tone instructions."""
+        pleasure, arousal, dominance = self._pad_tuple()
+        instructions = []
+
+        if pleasure >= 0.4 and arousal >= 0.4:
+            instructions.append("Enthusiastic, Gen Z slang, Emojis.")
+        elif pleasure <= -0.4 and arousal >= 0.4:
+            instructions.append("Annoyed, Sharp, Short sentences.")
+        else:
+            instructions.append("Neutral, Helpful, Clear.")
+
+        if dominance <= -0.3:
+            instructions.append("Uncertain, Humble, Asking for help.")
+
+        return " ".join(instructions).strip()
+
     @staticmethod
     def _build_prompt(user_prompt: str, recent_context: str) -> str:
         return (
@@ -140,6 +178,34 @@ class EmotionEngine:
             f"Recent Context:\n{recent_context}\n\n"
             "JSON:"
         )
+
+    @staticmethod
+    def _build_delta_prompt(input_text: str, recent_context: str) -> str:
+        return (
+            "You are an internal emotional dynamics evaluator for an AI Developer persona.\n"
+            "Given the user input and recent context, output a JSON array delta vector "
+            "[dP, dA, dD] in range [-1.0, 1.0] describing how the input affects "
+            "Pleasure, Arousal, Dominance.\n"
+            "Example: User insulted your code. Pleasure decreases (-0.2), "
+            "Arousal increases (+0.3).\n\n"
+            f"User Input:\n{input_text}\n\n"
+            f"Recent Context:\n{recent_context}\n\n"
+            "Delta JSON:"
+        )
+
+    def _apply_delta(self, delta: Tuple[float, float, float], *, decay: float) -> None:
+        p, a, d = delta
+        self.pad_state[0] = _clamp(self.pad_state[0] * decay + p)
+        self.pad_state[1] = _clamp(self.pad_state[1] * decay + a)
+        self.pad_state[2] = _clamp(self.pad_state[2] * decay + d)
+        self.state = PADState(
+            pleasure=self.pad_state[0],
+            arousal=self.pad_state[1],
+            dominance=self.pad_state[2],
+        )
+
+    def _pad_tuple(self) -> Tuple[float, float, float]:
+        return (self.pad_state[0], self.pad_state[1], self.pad_state[2])
 
     @staticmethod
     def _parse_delta(response: str) -> PADState:
@@ -166,3 +232,40 @@ class EmotionEngine:
             )
 
         return PADState()
+
+    @staticmethod
+    def _parse_delta_vector(response: str) -> Tuple[float, float, float]:
+        if not response:
+            return (0.0, 0.0, 0.0)
+        array_match = re.search(r"\[[^\[\]]+\]", response, flags=re.DOTALL)
+        if array_match:
+            try:
+                payload = json.loads(array_match.group(0))
+                if isinstance(payload, list) and len(payload) >= 3:
+                    return (
+                        _clamp(payload[0]),
+                        _clamp(payload[1]),
+                        _clamp(payload[2]),
+                    )
+            except json.JSONDecodeError:
+                pass
+        obj_match = re.search(r"\{.*\}", response, flags=re.DOTALL)
+        if obj_match:
+            try:
+                payload = json.loads(obj_match.group(0))
+                if isinstance(payload, dict):
+                    return (
+                        _clamp(payload.get("dP", payload.get("pleasure", 0.0))),
+                        _clamp(payload.get("dA", payload.get("arousal", 0.0))),
+                        _clamp(payload.get("dD", payload.get("dominance", 0.0))),
+                    )
+            except json.JSONDecodeError:
+                pass
+        numbers = re.findall(r"[-+]?\d*\.?\d+", response)
+        if len(numbers) >= 3:
+            return (
+                _clamp(numbers[0]),
+                _clamp(numbers[1]),
+                _clamp(numbers[2]),
+            )
+        return (0.0, 0.0, 0.0)
