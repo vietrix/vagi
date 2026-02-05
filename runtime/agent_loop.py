@@ -6,6 +6,7 @@ import argparse
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+import json
 import re
 from typing import Callable, List, Optional, Protocol, Sequence
 
@@ -18,6 +19,7 @@ from core.memory.generative_memory import (
     ReflectionLoop,
     ReflectionLoopConfig,
 )
+from core.memory.reflexion import ReflexionManager
 from core.reasoning.curiosity import CuriosityDecision, CuriosityGate, QuestionGenerator
 from envs.toy_env import ToyEnv
 from runtime.logging import JsonlWriter
@@ -35,6 +37,9 @@ class ModelEngine(Protocol):
         ...
 
     def generate(self, prompt: str) -> str:
+        ...
+
+    def deep_infer(self, prompt: str) -> str:
         ...
 
 
@@ -93,6 +98,7 @@ class CognitiveAgent:
         curiosity_gate: Optional[CuriosityGate] = None,
         quick_infer_fn: Optional[QuickInferFn] = None,
         generate_fn: Optional[GenerateFn] = None,
+        deep_infer_fn: Optional[QuickInferFn] = None,
         executor: Optional[ThreadPoolExecutor] = None,
         config: Optional[CognitiveAgentConfig] = None,
     ) -> None:
@@ -100,6 +106,11 @@ class CognitiveAgent:
         self.memory_store_path = memory_store_path
         self.quick_infer: QuickInferFn = quick_infer_fn or model_engine.quick_infer
         self.generate_fn: GenerateFn = generate_fn or model_engine.generate
+        self.deep_infer: QuickInferFn = deep_infer_fn or getattr(
+            model_engine,
+            "deep_infer",
+            self.generate_fn,
+        )
         self.generative_memory = memory_stream or MemoryStream()
         self.emotion_engine = emotion_engine or EmotionEngine(llm_fn=self.quick_infer)
         question_generator = QuestionGenerator(llm_fn=self.quick_infer)
@@ -108,6 +119,9 @@ class CognitiveAgent:
         self._executor = executor or ThreadPoolExecutor(max_workers=2)
         self._pending_futures: List[Future[Optional[MemoryObject]]] = []
         self._recent_context: str = ""
+        self._insights_context: str = ""
+        self._insights_path = self._resolve_insights_path(memory_store_path)
+        self.reflexion = ReflexionManager(memory_store=self.generative_memory)
         self._reflection_loop = ReflectionLoop(
             self.generative_memory,
             llm_fn=self.quick_infer,
@@ -159,6 +173,14 @@ class CognitiveAgent:
 
         # Step 6: Reflection (async save + reflect)
         self._schedule_memory_update(user_input, response)
+        self.reflexion.add_turn(user_input, response)
+        if self.reflexion.should_reflect():
+            # TODO: move reflection into async background processing.
+            insights = self.reflexion.reflect(llm_fn=self.deep_infer)
+            for insight in insights:
+                print(f"[System] Insight derived: {insight.content}")
+            self._persist_insights(insights)
+            self._insights_context = self._format_insights(insights)
         self._recent_context = context_text
 
         return CognitiveActResult(
@@ -193,6 +215,8 @@ class CognitiveAgent:
         pad_str = f"[{pad.pleasure:.2f}, {pad.arousal:.2f}, {pad.dominance:.2f}]"
         tone = self._tone_instruction(self.emotion_engine.current_mood_label())
         memories_block = MemoryStream.format_memories(memories) or "- (none)"
+        if self._insights_context:
+            memories_block = f"{memories_block}\n\n{self._insights_context}"
         return self.config.system_prompt_template.format(
             pad=pad_str,
             tone=tone,
@@ -245,6 +269,45 @@ class CognitiveAgent:
         if len(self.generative_memory.memories) >= self.config.reflection_min_memories:
             self._reflection_loop.maybe_reflect(step=len(self.generative_memory.memories))
         return memory
+
+    def _resolve_insights_path(self, memory_store_path: Optional[Path]) -> Optional[Path]:
+        if memory_store_path is None:
+            return Path("insights.json")
+        if memory_store_path.suffix.lower() == ".json":
+            return memory_store_path
+        return memory_store_path / "insights.json"
+
+    def _persist_insights(self, insights: Sequence[MemoryObject]) -> None:
+        if not insights or self._insights_path is None:
+            return
+        payload = []
+        if self._insights_path.exists():
+            try:
+                payload = json.loads(self._insights_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                payload = []
+        for insight in insights:
+            payload.append(
+                {
+                    "timestamp": insight.timestamp.isoformat(),
+                    "content": insight.content,
+                    "importance_score": insight.importance_score,
+                }
+            )
+        self._insights_path.parent.mkdir(parents=True, exist_ok=True)
+        self._insights_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _format_insights(insights: Sequence[MemoryObject]) -> str:
+        if not insights:
+            return ""
+        lines = ["[Insights]"]
+        for insight in insights:
+            lines.append(f"- {insight.content}")
+        return "\n".join(lines)
 
 
 def _parse_scalar(text: str, *, default: float) -> float:

@@ -100,6 +100,30 @@ class ReflexionManager:
         self._pending.append(future)
         return future
 
+    def add_turn(
+        self,
+        user_text: str,
+        assistant_text: str,
+        *,
+        timestamp: Optional[datetime] = None,
+    ) -> None:
+        interaction = Interaction(
+            timestamp=timestamp or _utc_now(),
+            user_text=user_text,
+            assistant_text=assistant_text,
+        )
+        with self._lock:
+            self._buffer.append(interaction)
+        self.memory_store.add_memory(
+            content=f"User: {user_text}\nAssistant: {assistant_text}",
+            importance_score=self.config.raw_importance,
+            timestamp=interaction.timestamp,
+        )
+
+    def should_reflect(self) -> bool:
+        with self._lock:
+            return len(self._buffer) >= self.config.buffer_size
+
     def reflect(self, llm_fn: Callable[[str], str]) -> List[MemoryObject]:
         snapshot = self._drain_buffer()
         if not snapshot:
