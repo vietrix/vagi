@@ -6,7 +6,10 @@ from typing import Optional
 
 import torch
 
-from vagi_core import RecurrentState, VAGIConfig, VAGICore
+try:
+    from vagi_core import RecurrentState, VAGIConfig, VAGICore
+except ModuleNotFoundError:
+    from core.base import RecurrentState, VAGIConfig, VAGICore
 
 
 class CoreAdapter:
