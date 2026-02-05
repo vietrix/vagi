@@ -117,6 +117,13 @@ from .verifier_hook import (
     create_verifier_hook,
     process_model_output,
 )
+from .curiosity import (
+    CuriosityGate,
+    QuestionGenerator,
+    PerplexityEstimator,
+    CuriosityDecision,
+    PerplexityResult,
+)
 from .verifiers import (
     PythonExecutor,
     ExecutionBackend,
@@ -192,6 +199,12 @@ __all__ = [
     "StreamingVerifier",
     "create_verifier_hook",
     "process_model_output",
+    # Curiosity / Active inquiry
+    "CuriosityGate",
+    "QuestionGenerator",
+    "PerplexityEstimator",
+    "CuriosityDecision",
+    "PerplexityResult",
     # Python Executor
     "PythonExecutor",
     "ExecutionBackend",

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
 import torch
 
+from core.memory.generative_memory import MemoryStream, ReflectionLoop, ReflectionLoopConfig
 from envs.toy_env import ToyEnv
 from runtime.logging import JsonlWriter
 from runtime.privacy import apply_retention, delete_logs
@@ -21,6 +23,8 @@ def run_episode(
     steps: int,
     log_path: Optional[str] = None,
     privacy_opt_in: bool = False,
+    memory_stream: Optional[MemoryStream] = None,
+    reflection_loop: Optional[ReflectionLoop] = None,
 ) -> int:
     model.eval()
     obs = env.reset()
@@ -53,6 +57,28 @@ def run_episode(
                     }
                 )
 
+            if memory_stream is not None:
+                importance = min(1.0, max(0.0, abs(float(reward))))
+                memory_stream.add_memory(
+                    content=(
+                        f"t={t} obs={obs.tolist()} action={action} "
+                        f"reward={float(reward):.4f}"
+                    ),
+                    importance_score=importance,
+                    related_nodes=[f"action:{action}"],
+                )
+
+            if reflection_loop is not None:
+                insight = reflection_loop.maybe_reflect(step=t)
+                if insight is not None and writer is not None:
+                    writer.write(
+                        {
+                            "timestep": t,
+                            "reflection": insight.content,
+                            "reflection_importance": insight.importance_score,
+                        }
+                    )
+
             state = out["state"]
             obs = next_obs
             token_id = action
@@ -76,7 +102,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--privacy-opt-in", action="store_true")
     parser.add_argument("--retain-days", type=int, default=7)
     parser.add_argument("--delete-logs", action="store_true")
+    parser.add_argument("--enable-reflection", action="store_true")
+    parser.add_argument("--reflection-interval", type=int, default=5)
+    parser.add_argument("--reflection-window", type=int, default=20)
+    parser.add_argument("--reflection-min-memories", type=int, default=5)
     return parser.parse_args()
+
+
+def _heuristic_reflector(prompt: str) -> str:
+    """Fallback reflector when no external LLM is wired in."""
+    actions = []
+    rewards = []
+    for line in prompt.splitlines():
+        if "action=" not in line or "reward=" not in line:
+            continue
+        try:
+            action_str = line.split("action=")[1].split()[0]
+            reward_str = line.split("reward=")[1].split()[0]
+            actions.append(int(action_str))
+            rewards.append(float(reward_str))
+        except (IndexError, ValueError):
+            continue
+    if not actions:
+        return "Insight: Not enough consistent signals yet."
+    top_action, _ = Counter(actions).most_common(1)[0]
+    avg_reward = sum(rewards) / max(1, len(rewards))
+    return f"Insight: Actions concentrate on {top_action} with avg reward {avg_reward:.3f}."
 
 
 def main() -> None:
@@ -101,6 +152,19 @@ def main() -> None:
     )
     model = VAGICore(cfg)
 
+    memory_stream = MemoryStream()
+    reflection_loop = None
+    if args.enable_reflection:
+        reflection_loop = ReflectionLoop(
+            memory_stream,
+            llm_fn=_heuristic_reflector,
+            config=ReflectionLoopConfig(
+                reflection_interval_steps=args.reflection_interval,
+                recent_window=args.reflection_window,
+                min_memories=args.reflection_min_memories,
+            ),
+        )
+
     log_path = Path(args.log)
     if args.delete_logs:
         delete_logs(log_path.parent)
@@ -111,6 +175,8 @@ def main() -> None:
         steps=args.steps,
         log_path=args.log,
         privacy_opt_in=args.privacy_opt_in,
+        memory_stream=memory_stream,
+        reflection_loop=reflection_loop,
     )
     print(f"Completed {steps} steps. Logs at {args.log}")
 

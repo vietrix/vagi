@@ -7,6 +7,13 @@ from .knowledge_graph import (
     Relation,
     SVOExtractor,
 )
+from .generative_memory import (
+    MemoryObject,
+    RetrievalFunction,
+    MemoryStream,
+    ReflectionLoop,
+    ReflectionLoopConfig,
+)
 
 __all__ = [
     "KnowledgeGraphRAG",
@@ -14,4 +21,9 @@ __all__ = [
     "Entity",
     "Relation",
     "SVOExtractor",
+    "MemoryObject",
+    "RetrievalFunction",
+    "MemoryStream",
+    "ReflectionLoop",
+    "ReflectionLoopConfig",
 ]
