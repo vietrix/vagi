@@ -43,6 +43,8 @@ class KVCache:
         device: torch.device | str,
         dtype: torch.dtype,
         sliding_window: Optional[int] = None,
+        *,
+        prefill_empty: bool = False,
     ) -> "KVCache":
         """Allocate pre-sized KV cache buffers.
 
@@ -68,13 +70,13 @@ class KVCache:
         # Determine actual cache size
         cache_size = sliding_window if sliding_window else max_len
 
-        # Pre-allocate full buffers (more efficient than concatenation)
+        alloc_len = 0 if prefill_empty else cache_size
         keys = [
-            torch.zeros((batch_size, n_kv_heads, cache_size, head_dim), device=device, dtype=dtype)
+            torch.zeros((batch_size, n_kv_heads, alloc_len, head_dim), device=device, dtype=dtype)
             for _ in range(num_layers)
         ]
         values = [
-            torch.zeros((batch_size, n_kv_heads, cache_size, head_dim), device=device, dtype=dtype)
+            torch.zeros((batch_size, n_kv_heads, alloc_len, head_dim), device=device, dtype=dtype)
             for _ in range(num_layers)
         ]
         return cls(
@@ -104,6 +106,20 @@ class KVCache:
         """
         if self.keys is None or self.values is None:
             return new_keys, new_values
+
+        if self.max_len and self.keys[layer_idx] is not None and self.keys[layer_idx].size(2) == 0:
+            cache_size = self.sliding_window or self.max_len
+            batch_size, n_kv_heads, _, head_dim = new_keys.shape
+            self.keys[layer_idx] = torch.zeros(
+                (batch_size, n_kv_heads, cache_size, head_dim),
+                device=new_keys.device,
+                dtype=new_keys.dtype,
+            )
+            self.values[layer_idx] = torch.zeros(
+                (batch_size, n_kv_heads, cache_size, head_dim),
+                device=new_values.device,
+                dtype=new_values.dtype,
+            )
 
         seq_len = new_keys.size(2)
         cache_size = self.keys[layer_idx].size(2)

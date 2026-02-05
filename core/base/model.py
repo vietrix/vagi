@@ -103,6 +103,7 @@ class VAGICore(nn.Module):
                 max_len=max_len,
                 device=device,
                 dtype=dtype,
+                prefill_empty=True,
             )
         else:
             kv = KVCache.empty(self.cfg.n_layers)
