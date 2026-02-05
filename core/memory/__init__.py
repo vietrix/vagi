@@ -14,6 +14,7 @@ from .generative_memory import (
     ReflectionLoop,
     ReflectionLoopConfig,
 )
+from .reflexion import ReflexionManager, ReflexionConfig
 
 __all__ = [
     "KnowledgeGraphRAG",
@@ -26,4 +27,6 @@ __all__ = [
     "MemoryStream",
     "ReflectionLoop",
     "ReflectionLoopConfig",
+    "ReflexionManager",
+    "ReflexionConfig",
 ]
