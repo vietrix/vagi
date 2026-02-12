@@ -54,6 +54,11 @@ def test_reasoner_backtracks_until_safe(tmp_path: Path) -> None:
     )
     assert "Verifier pass: True" in result["content"]
     assert 0 <= result["trust_score"] <= 1
+    trace = result["metadata"]["ooda_trace"]
+    assert trace["observe_ok"] is True
+    assert trace["orient_ok"] is True
+    assert trace["decide_ok"] is True
+    assert trace["act_ok"] is True
     metrics = store.metrics()
     assert metrics["total_episodes"] == 1
     store.close()

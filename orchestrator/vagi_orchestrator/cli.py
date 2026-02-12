@@ -34,6 +34,11 @@ def chat(
     response.raise_for_status()
     body = response.json()
     typer.echo(body["choices"][0]["message"]["content"])
+    policy = body.get("metadata", {}).get("policy", {})
+    if policy:
+        typer.echo(
+            f"policy_status={policy.get('status')} verifier_pass={policy.get('verifier_pass')}"
+        )
 
 
 @app.command("scan")
@@ -91,4 +96,3 @@ def benchmark(
 
 if __name__ == "__main__":
     app()
-

@@ -14,6 +14,7 @@ from fastapi.responses import ORJSONResponse, StreamingResponse
 
 from .config import Settings, load_settings
 from .dream import DreamScheduler, DreamService
+from .errors import PolicyError
 from .kernel_client import KernelClient
 from .models import (
     ChatChoice,
@@ -27,6 +28,7 @@ from .models import (
     ScanCodeRequest,
     ScanCodeResponse,
 )
+from .policy import IdentityPolicyEngine
 from .reasoning import Reasoner, build_session_id
 from .scanner import scan_codebase
 from .store import EpisodeStore
@@ -38,6 +40,7 @@ class Services:
     kernel: KernelClient
     store: EpisodeStore
     reasoner: Reasoner
+    policy_engine: IdentityPolicyEngine
     dream_service: DreamService
     dream_scheduler: DreamScheduler
     metrics: dict[str, int]
@@ -60,6 +63,7 @@ def create_app(
         max_decide_iters=settings.max_decide_iters,
         risk_threshold=settings.risk_threshold,
     )
+    policy_engine = IdentityPolicyEngine(version="v1")
     dream_service = DreamService(store=store)
     scheduler = DreamScheduler(
         service=dream_service,
@@ -71,6 +75,7 @@ def create_app(
         kernel=kernel_client,
         store=store,
         reasoner=reasoner,
+        policy_engine=policy_engine,
         dream_service=dream_service,
         dream_scheduler=scheduler,
         metrics=defaultdict(int),
@@ -116,6 +121,13 @@ def create_app(
         messages = [msg.model_dump() for msg in request.messages]
 
         try:
+            services.policy_engine.precheck(messages=messages)
+        except PolicyError as exc:
+            services.metrics["policy_failures"] += 1
+            return ORJSONResponse(status_code=422, content=exc.to_response())
+
+        result: dict[str, Any] | None = None
+        try:
             result = await services.reasoner.run_chat(
                 session_id=session_id,
                 messages=messages,
@@ -123,7 +135,36 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        verifier_pass = bool(result["metadata"]["verifier"]["pass"])
+        if result is None:
+            raise HTTPException(status_code=500, detail="reasoner returned empty result")
+
+        verifier_required = bool(result.get("metadata", {}).get("verifier_required", True))
+        verifier_pass = bool(result.get("metadata", {}).get("verifier", {}).get("pass", False))
+        ooda_trace = dict(result.get("metadata", {}).get("ooda_trace", {}))
+
+        try:
+            policy_meta = services.policy_engine.postcheck(result=result)
+            services.store.attach_policy_decision(
+                episode_id=int(result["episode_id"]),
+                policy_pass=True,
+                policy_violations=[],
+                verifier_required=verifier_required,
+                verifier_pass=verifier_pass,
+                ooda_trace=ooda_trace,
+            )
+        except PolicyError as exc:
+            services.metrics["policy_failures"] += 1
+            if "episode_id" in result:
+                services.store.attach_policy_decision(
+                    episode_id=int(result["episode_id"]),
+                    policy_pass=False,
+                    policy_violations=[v.to_dict() for v in exc.violations],
+                    verifier_required=verifier_required,
+                    verifier_pass=verifier_pass,
+                    ooda_trace=ooda_trace,
+                )
+            return ORJSONResponse(status_code=422, content=exc.to_response())
+
         if not verifier_pass:
             services.metrics["verifier_failures"] += 1
 
@@ -162,8 +203,13 @@ def create_app(
                 "session_id": session_id,
                 "episode_id": result["episode_id"],
                 "trust_score": result["trust_score"],
-                "simulation": result["metadata"]["simulation"],
-                "verifier": result["metadata"]["verifier"],
+                "policy": policy_meta,
+                "safety": {
+                    "risk_score": float(
+                        result.get("metadata", {}).get("simulation", {}).get("risk_score", 1.0)
+                    ),
+                    "verifier_pass": verifier_pass,
+                },
             },
         )
         return response

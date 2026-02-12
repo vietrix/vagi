@@ -3,6 +3,7 @@
 Service điều phối cho vAGI V1:
 
 - OODA reasoning loop (`observe -> orient -> decide -> act`)
+- Runtime policy gateway (hard-enforce OODA + verifier gate)
 - OpenAI-compatible HTTP API (`/v1/chat/completions`)
 - Agent scan code endpoint (`/v1/agents/scan-code`)
 - Evolution batch (`/v1/evolution/run-dream`)
@@ -23,4 +24,3 @@ uvicorn vagi_orchestrator.app:app --host 127.0.0.1 --port 8080
 - `VAGI_RUNTIME_DIR` (default `runtime`)
 - `VAGI_DREAM_HOUR` (default `2`)
 - `VAGI_DREAM_MINUTE` (default `0`)
-

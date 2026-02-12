@@ -31,7 +31,7 @@ curl http://127.0.0.1:8080/v1/healthz
 ```bash
 curl -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d "{\"model\":\"vagi-v1\",\"messages\":[{\"role\":\"user\",\"content\":\"viết login an toàn\"}]}"
+  -d "{\"model\":\"vagi-v1\",\"messages\":[{\"role\":\"user\",\"content\":\"write secure login\"}]}"
 ```
 
 ## 4) Trigger dream batch
@@ -44,7 +44,11 @@ curl -X POST http://127.0.0.1:8080/v1/evolution/run-dream \
 
 ## 5) Failure handling
 
-- Nếu `/v1/healthz` trả `degraded`: kiểm tra kernel URL (`VAGI_KERNEL_URL`) và trạng thái service kernel.
-- Nếu verifier fail tăng cao: kiểm tra payload `violations` và thắt chặt generation guardrails.
-- Nếu không promote được trong dream: kiểm tra `pass_rate` và `regression_fail` trong báo cáo run-dream.
+- If `/v1/healthz` is `degraded`: check `VAGI_KERNEL_URL` and kernel process status.
+- If `POST /v1/chat/completions` returns `422`:
+  - inspect `error.code` and `error.details[]`
+  - verify OODA stages and verifier gate in audit DB (`episodes`)
+  - tighten generation guards if repeated policy failures appear
+- If verifier failures increase: inspect `violations` and adjust reasoner draft rules.
+- If dream promotion is blocked: inspect `pass_rate` and `regression_fail` from run report.
 

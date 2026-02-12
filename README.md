@@ -39,10 +39,14 @@ API ngoài:
 - `GET /v1/healthz`
 - `GET /v1/metrics`
 
+`/v1/chat/completions` co hard policy gate:
+- bat buoc OODA stage hop le
+- bat buoc verifier pass
+- fail se tra `HTTP 422` voi error code chuan hoa
+
 ## Test
 
 ```bash
 cargo test -p vagi-kernel
 cd orchestrator && pytest
 ```
-

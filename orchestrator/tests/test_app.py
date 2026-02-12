@@ -9,7 +9,7 @@ from vagi_orchestrator.config import Settings
 from vagi_orchestrator.store import EpisodeStore
 
 
-class FakeKernel:
+class FakeKernelPass:
     async def close(self) -> None:
         return None
 
@@ -40,8 +40,24 @@ class FakeKernel:
         return {"pass": True, "violations": [], "timeout_hit": False, "wasi_ok": True}
 
 
-def test_chat_endpoint_returns_openai_shape(tmp_path: Path) -> None:
-    settings = Settings(
+class FakeKernelFailVerifier(FakeKernelPass):
+    async def verify(
+        self,
+        patch_ir: str,
+        max_loop_iters: int = 2048,
+        side_effect_budget: int = 3,
+        timeout_ms: int = 80,
+    ) -> dict:
+        return {
+            "pass": False,
+            "violations": ["infinite_loop_risk"],
+            "timeout_hit": False,
+            "wasi_ok": True,
+        }
+
+
+def _settings(tmp_path: Path) -> Settings:
+    return Settings(
         kernel_url="http://unused",
         host="127.0.0.1",
         port=8080,
@@ -51,13 +67,16 @@ def test_chat_endpoint_returns_openai_shape(tmp_path: Path) -> None:
         max_decide_iters=4,
         risk_threshold=0.65,
     )
+
+
+def test_chat_endpoint_returns_openai_shape_with_policy_metadata(tmp_path: Path) -> None:
     store = EpisodeStore(
         db_path=tmp_path / "episodes.db",
         long_term_path=tmp_path / "memory.jsonl",
     )
     app = create_app(
-        settings=settings,
-        kernel_client=FakeKernel(),  # type: ignore[arg-type]
+        settings=_settings(tmp_path),
+        kernel_client=FakeKernelPass(),  # type: ignore[arg-type]
         store=store,
     )
     client = TestClient(app)
@@ -65,7 +84,7 @@ def test_chat_endpoint_returns_openai_shape(tmp_path: Path) -> None:
         "/v1/chat/completions",
         json={
             "model": "vagi-v1",
-            "messages": [{"role": "user", "content": "viết login flow an toàn"}],
+            "messages": [{"role": "user", "content": "write secure login flow"}],
             "stream": False,
         },
     )
@@ -74,5 +93,36 @@ def test_chat_endpoint_returns_openai_shape(tmp_path: Path) -> None:
     assert body["object"] == "chat.completion"
     assert "choices" in body and len(body["choices"]) == 1
     assert body["choices"][0]["message"]["role"] == "assistant"
+    assert body["metadata"]["policy"]["status"] == "pass"
+    assert body["metadata"]["policy"]["verifier_pass"] is True
+    client.close()
+
+
+def test_chat_endpoint_returns_422_when_verifier_gate_fails(tmp_path: Path) -> None:
+    store = EpisodeStore(
+        db_path=tmp_path / "episodes.db",
+        long_term_path=tmp_path / "memory.jsonl",
+    )
+    app = create_app(
+        settings=_settings(tmp_path),
+        kernel_client=FakeKernelFailVerifier(),  # type: ignore[arg-type]
+        store=store,
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "vagi-v1",
+            "messages": [{"role": "user", "content": "write login flow"}],
+            "stream": False,
+        },
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "policy_ooda_missing_stage"
+    assert any(
+        detail["code"] in {"policy_ooda_missing_stage", "policy_verifier_required"}
+        for detail in body["error"]["details"]
+    )
     client.close()
 

@@ -35,7 +35,33 @@
         "completion_tokens": { "type": "integer" },
         "total_tokens": { "type": "integer" }
       }
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["session_id", "episode_id", "trust_score", "policy", "safety"],
+      "properties": {
+        "session_id": { "type": "string" },
+        "episode_id": { "type": "integer" },
+        "trust_score": { "type": "number" },
+        "policy": {
+          "type": "object",
+          "required": ["status", "version", "verifier_required", "verifier_pass"],
+          "properties": {
+            "status": { "type": "string", "const": "pass" },
+            "version": { "type": "string" },
+            "verifier_required": { "type": "boolean" },
+            "verifier_pass": { "type": "boolean" }
+          }
+        },
+        "safety": {
+          "type": "object",
+          "required": ["risk_score", "verifier_pass"],
+          "properties": {
+            "risk_score": { "type": "number" },
+            "verifier_pass": { "type": "boolean" }
+          }
+        }
+      }
     }
   }
 }
-
