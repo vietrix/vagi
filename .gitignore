@@ -1,0 +1,16 @@
+target/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.env
+runtime/
+orchestrator/.mypy_cache/
+orchestrator/.ruff_cache/
+orchestrator/.coverage
+orchestrator/htmlcov/
+dist/
+build/
+*.log
+*.db
+
