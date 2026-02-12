@@ -659,3 +659,26 @@ specific requirements.
 if any, to sign a "copyright disclaimer" for the program, if necessary.
 For more information on this, and how to apply and follow the GNU AGPL, see
 <https://www.gnu.org/licenses/>.
+
+------------------------------
+ADDITIONAL TERMS (AGPLv3 SECTION 7)
+------------------------------
+
+The following additional terms apply to this project under Section 7(b)
+of the GNU Affero General Public License version 3:
+
+1) Preservation of Attribution Notices
+   You must preserve the following attribution notices in source form,
+   object form, and project documentation where legal notices are shown:
+   - "Powered by vAGI (Vietrix Artificial General Intelligence)"
+   - "Copyright (C) Le Hung Quang Minh and vAGI contributors"
+
+2) Interactive User Interfaces
+   If a modified version includes an interactive user interface, the
+   interface must display the attribution notice
+   "Powered by vAGI (Vietrix Artificial General Intelligence)"
+   within the Appropriate Legal Notices for that interface.
+
+3) Non-removal of This Additional Terms Section
+   Copies and modified versions conveyed to others must retain this
+   "ADDITIONAL TERMS (AGPLv3 SECTION 7)" section.
