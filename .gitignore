@@ -9,8 +9,8 @@ orchestrator/.mypy_cache/
 orchestrator/.ruff_cache/
 orchestrator/.coverage
 orchestrator/htmlcov/
+*.egg-info/
 dist/
 build/
 *.log
 *.db
-
