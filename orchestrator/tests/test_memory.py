@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -21,7 +23,7 @@ class FakeModel:
 
     def encode(self, text: str, convert_to_numpy: bool = True) -> FakeVector:
         self.calls.append((text, convert_to_numpy))
-        return FakeVector([0.25, 0.5, 0.75])
+        return FakeVector([0.01] * 384)
 
 
 class FakeResponse:
@@ -51,7 +53,8 @@ def test_embedding_service_embed_normalizes_and_converts(monkeypatch: pytest.Mon
     )
 
     vector = EmbeddingService.embed("  hello world  ")
-    assert vector == [0.25, 0.5, 0.75]
+    assert len(vector) == 384
+    assert all(value == 0.01 for value in vector)
     assert model.calls == [("hello world", True)]
 
 
@@ -83,7 +86,7 @@ def test_memory_client_add_document_posts_expected_payload(
     assert payload_capture["timeout"] == 9.0
 
 
-def test_memory_client_search_returns_text_list(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_memory_client_retrieve_returns_text_list(monkeypatch: pytest.MonkeyPatch) -> None:
     payload_capture: dict[str, object] = {}
 
     def fake_post(url: str, json: dict, timeout: float) -> FakeResponse:
@@ -107,13 +110,33 @@ def test_memory_client_search_returns_text_list(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(memory_module.httpx, "post", fake_post)
 
     client = MemoryClient(kernel_url="http://kernel")
-    hits = client.search("what is login", top_k=2)
+    hits = client.retrieve("what is login", top_k=2)
     assert hits == ["doc 1", "doc 2"]
     assert payload_capture["url"] == "http://kernel/internal/memory/search"
     assert payload_capture["json"] == {"vector": [0.9, 0.1], "top_k": 2}
 
 
-def test_memory_client_search_validates_top_k() -> None:
+def test_memory_client_retrieve_validates_top_k() -> None:
     client = MemoryClient(kernel_url="http://kernel")
     with pytest.raises(ValueError):
-        client.search("q", top_k=0)
+        client.retrieve("q", top_k=0)
+
+
+def test_memory_client_ingest_file_splits_paragraphs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    doc = tmp_path / "notes.txt"
+    doc.write_text("alpha\n\nbeta\n\n\ngamma", encoding="utf-8")
+    uploaded: list[str] = []
+
+    def fake_add_document(self: MemoryClient, text: str) -> bool:
+        uploaded.append(text)
+        return True
+
+    monkeypatch.setattr(MemoryClient, "add_document", fake_add_document)
+    client = MemoryClient(kernel_url="http://kernel")
+    summary = client.ingest_file(doc)
+
+    assert uploaded == ["alpha", "beta", "gamma"]
+    assert summary == {"total": 3, "success": 3, "failed": 0}

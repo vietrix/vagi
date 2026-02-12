@@ -10,6 +10,7 @@ from vagi_orchestrator.store import EpisodeStore
 class FakeKernel:
     def __init__(self) -> None:
         self._attempt = 0
+        self.last_infer_prompt: str | None = None
 
     async def init_state(self, session_id: str | None = None) -> dict:
         return {"session_id": session_id or "sid"}
@@ -38,6 +39,7 @@ class FakeKernel:
         return {"loaded": True, "model_id": "genesis-v0"}
 
     async def model_infer(self, prompt: str, max_new_tokens: int = 96) -> dict:
+        self.last_infer_prompt = prompt
         return {
             "model_id": "genesis-v0",
             "text": "Assistant: Toi se phan tich va de xuat patch an toan.",
@@ -47,7 +49,20 @@ class FakeKernel:
 
 class FakeKernelGarbage(FakeKernel):
     async def model_infer(self, prompt: str, max_new_tokens: int = 96) -> dict:
+        self.last_infer_prompt = prompt
         return {"model_id": "genesis-v0", "text": "aaaaaaaaaaaaaaaa", "latency_ms": 7}
+
+
+class FakeMemoryClient:
+    def __init__(self, hits: list[str]) -> None:
+        self._hits = hits
+        self.last_query: str | None = None
+        self.last_top_k: int | None = None
+
+    def retrieve(self, query: str, top_k: int = 3) -> list[str]:
+        self.last_query = query
+        self.last_top_k = top_k
+        return self._hits[:top_k]
 
 
 def test_reasoner_backtracks_until_safe(tmp_path: Path) -> None:
@@ -100,4 +115,42 @@ def test_reasoner_returns_deterministic_fallback_when_model_garbage(tmp_path: Pa
     assert result["content"] == "Insufficient data in kernel state."
     assert result["metadata"]["model_runtime"]["used"] is False
     assert result["metadata"]["model_runtime"]["fallback_reason"] == "garbage_detected"
+    store.close()
+
+
+def test_reasoner_injects_retrieved_context_into_infer_prompt(tmp_path: Path) -> None:
+    store = EpisodeStore(
+        db_path=tmp_path / "episodes.db",
+        long_term_path=tmp_path / "memory.jsonl",
+    )
+    kernel = FakeKernel()
+    memory = FakeMemoryClient(
+        hits=[
+            "JWT login flow requires nonce validation.",
+            "Use Argon2id for password hashing.",
+        ]
+    )
+    reasoner = Reasoner(
+        kernel=kernel,  # type: ignore[arg-type]
+        store=store,
+        memory_client=memory,  # type: ignore[arg-type]
+        memory_top_k=2,
+        max_decide_iters=4,
+        risk_threshold=0.65,
+    )
+    result = asyncio.run(
+        reasoner.run_chat(
+            session_id="sid-rag",
+            messages=[{"role": "user", "content": "design secure login api"}],
+        )
+    )
+
+    assert memory.last_query == "design secure login api"
+    assert memory.last_top_k == 2
+    assert kernel.last_infer_prompt is not None
+    assert "Retrieved memory context:" in kernel.last_infer_prompt
+    assert "JWT login flow requires nonce validation." in kernel.last_infer_prompt
+    retrieval_meta = result["metadata"]["observe"]["retrieval"]
+    assert retrieval_meta["used"] is True
+    assert retrieval_meta["hits_count"] == 2
     store.close()

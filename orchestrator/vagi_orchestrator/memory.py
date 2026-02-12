@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import re
 from threading import Lock
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 _MODEL_NAME = "all-MiniLM-L6-v2"
+_EMBEDDING_DIM = 384
 _MODEL_LOCK = Lock()
 _MODEL_INSTANCE: Any | None = None
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n+", normalized)]
+    return [chunk for chunk in chunks if chunk]
 
 
 class EmbeddingService:
@@ -30,7 +39,12 @@ class EmbeddingService:
 
         model = cls._get_model()
         vector = model.encode(normalized, convert_to_numpy=True)
-        return [float(value) for value in vector.tolist()]
+        values = [float(value) for value in vector.tolist()]
+        if len(values) != _EMBEDDING_DIM:
+            raise ValueError(
+                f"embedding dimension mismatch: expected {_EMBEDDING_DIM}, got {len(values)}"
+            )
+        return values
 
 
 class MemoryClient:
@@ -59,7 +73,36 @@ class MemoryClient:
         payload = response.json()
         return bool(payload.get("id"))
 
-    def search(self, query: str, top_k: int = 3) -> list[str]:
+    def ingest_file(self, file_path: str | Path) -> dict[str, int]:
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"file not found: {path}")
+        if not path.is_file():
+            raise IsADirectoryError(f"path is not a file: {path}")
+
+        text = path.read_text(encoding="utf-8")
+        paragraphs = _split_paragraphs(text)
+        if not paragraphs:
+            raise ValueError("file does not contain non-empty paragraphs")
+
+        total = len(paragraphs)
+        success = 0
+        failed = 0
+        for paragraph in paragraphs:
+            try:
+                if self.add_document(paragraph):
+                    success += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+        return {
+            "total": total,
+            "success": success,
+            "failed": failed,
+        }
+
+    def retrieve(self, query: str, top_k: int = 3) -> list[str]:
         normalized = query.strip()
         if not normalized:
             raise ValueError("query must not be empty")
@@ -80,3 +123,6 @@ class MemoryClient:
             for item in results
             if isinstance(item, dict) and isinstance(item.get("text"), str)
         ]
+
+    def search(self, query: str, top_k: int = 3) -> list[str]:
+        return self.retrieve(query=query, top_k=top_k)

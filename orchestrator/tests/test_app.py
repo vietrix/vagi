@@ -66,6 +66,11 @@ class FakeKernelFailVerifier(FakeKernelPass):
         }
 
 
+class FakeMemoryClient:
+    def retrieve(self, query: str, top_k: int = 3) -> list[str]:
+        return []
+
+
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
         kernel_url="http://unused",
@@ -88,6 +93,7 @@ def test_chat_endpoint_returns_openai_shape_with_policy_metadata(tmp_path: Path)
         settings=_settings(tmp_path),
         kernel_client=FakeKernelPass(),  # type: ignore[arg-type]
         store=store,
+        memory_client=FakeMemoryClient(),  # type: ignore[arg-type]
     )
     client = TestClient(app)
     response = client.post(
@@ -121,6 +127,7 @@ def test_chat_endpoint_returns_422_when_verifier_gate_fails(tmp_path: Path) -> N
         settings=_settings(tmp_path),
         kernel_client=FakeKernelFailVerifier(),  # type: ignore[arg-type]
         store=store,
+        memory_client=FakeMemoryClient(),  # type: ignore[arg-type]
     )
     client = TestClient(app)
     response = client.post(

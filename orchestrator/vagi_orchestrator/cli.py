@@ -115,39 +115,39 @@ def benchmark(
     )
 
 
+@memory_app.command("learn")
+def memory_learn(
+    file_path: str,
+    kernel_url: Annotated[str | None, typer.Option("--kernel-url")] = None,
+) -> None:
+    client = MemoryClient(kernel_url=_kernel_url(kernel_url))
+    summary = client.ingest_file(file_path)
+    typer.echo(
+        f"learn_total={summary['total']} success={summary['success']} failed={summary['failed']}"
+    )
+
+
 @memory_app.command("ingest")
 def memory_ingest(
     file_path: str,
     kernel_url: Annotated[str | None, typer.Option("--kernel-url")] = None,
 ) -> None:
-    path = Path(file_path)
-    if not path.exists():
-        raise typer.BadParameter(f"file not found: {path}")
-    if not path.is_file():
-        raise typer.BadParameter(f"path is not a file: {path}")
+    memory_learn(file_path=file_path, kernel_url=kernel_url)
 
-    text = path.read_text(encoding="utf-8")
-    paragraphs = _split_paragraphs(text)
-    if not paragraphs:
-        raise typer.BadParameter("file does not contain non-empty paragraphs")
 
+@memory_app.command("ask")
+def memory_ask(
+    question: str,
+    top_k: Annotated[int, typer.Option("--top-k")] = 3,
+    kernel_url: Annotated[str | None, typer.Option("--kernel-url")] = None,
+) -> None:
     client = MemoryClient(kernel_url=_kernel_url(kernel_url))
-    success = 0
-    failed = 0
-    total = len(paragraphs)
-    for index, paragraph in enumerate(paragraphs, start=1):
-        try:
-            if client.add_document(paragraph):
-                success += 1
-                typer.echo(f"[{index}/{total}] ingested")
-            else:
-                failed += 1
-                typer.echo(f"[{index}/{total}] failed: missing document id", err=True)
-        except Exception as exc:
-            failed += 1
-            typer.echo(f"[{index}/{total}] failed: {exc}", err=True)
-
-    typer.echo(f"ingest_total={total} success={success} failed={failed}")
+    results = client.retrieve(question, top_k=top_k)
+    if not results:
+        typer.echo("No memory hits.")
+        return
+    for idx, item in enumerate(results, start=1):
+        typer.echo(f"{idx}. {item}")
 
 
 @memory_app.command("query")
@@ -156,13 +156,7 @@ def memory_query(
     top_k: Annotated[int, typer.Option("--top-k")] = 3,
     kernel_url: Annotated[str | None, typer.Option("--kernel-url")] = None,
 ) -> None:
-    client = MemoryClient(kernel_url=_kernel_url(kernel_url))
-    results = client.search(question, top_k=top_k)
-    if not results:
-        typer.echo("No memory hits.")
-        return
-    for idx, item in enumerate(results, start=1):
-        typer.echo(f"{idx}. {item}")
+    memory_ask(question=question, top_k=top_k, kernel_url=kernel_url)
 
 
 @genesis_app.command("train")

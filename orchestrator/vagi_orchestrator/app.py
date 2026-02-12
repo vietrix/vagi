@@ -16,6 +16,7 @@ from .config import Settings, load_settings
 from .dream import DreamScheduler, DreamService
 from .errors import PolicyError
 from .kernel_client import KernelClient
+from .memory import MemoryClient
 from .models import (
     ChatChoice,
     ChatChoiceMessage,
@@ -38,6 +39,7 @@ from .store import EpisodeStore
 class Services:
     settings: Settings
     kernel: KernelClient
+    memory: MemoryClient
     store: EpisodeStore
     reasoner: Reasoner
     policy_engine: IdentityPolicyEngine
@@ -50,9 +52,11 @@ def create_app(
     settings: Settings | None = None,
     kernel_client: KernelClient | None = None,
     store: EpisodeStore | None = None,
+    memory_client: MemoryClient | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     kernel_client = kernel_client or KernelClient(base_url=settings.kernel_url)
+    memory_client = memory_client or MemoryClient(kernel_url=settings.kernel_url)
     store = store or EpisodeStore(
         db_path=settings.runtime_dir / "episodes.db",
         long_term_path=settings.runtime_dir / "long_term_memory.jsonl",
@@ -62,6 +66,7 @@ def create_app(
         store=store,
         max_decide_iters=settings.max_decide_iters,
         risk_threshold=settings.risk_threshold,
+        memory_client=memory_client,
     )
     policy_engine = IdentityPolicyEngine(version="v1")
     dream_service = DreamService(store=store)
@@ -73,6 +78,7 @@ def create_app(
     services = Services(
         settings=settings,
         kernel=kernel_client,
+        memory=memory_client,
         store=store,
         reasoner=reasoner,
         policy_engine=policy_engine,

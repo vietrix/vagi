@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from typing import Any
 
 from .kernel_client import KernelClient
+from .memory import MemoryClient
 from .store import EpisodeStore
 
 
@@ -38,6 +40,8 @@ class Reasoner:
     store: EpisodeStore
     max_decide_iters: int = 12
     risk_threshold: float = 0.65
+    memory_client: MemoryClient | None = None
+    memory_top_k: int = 3
 
     async def run_chat(
         self, *, session_id: str, messages: list[dict[str, str]]
@@ -49,12 +53,22 @@ class Reasoner:
         )
         if not prompt.strip():
             raise ValueError("messages do not contain valid content")
+        user_input = self._extract_user_input(messages=messages, fallback_prompt=prompt)
 
         # OBSERVE
-        observe_ctx = self._observe(messages=messages, prompt=prompt)
+        retrieval_ctx = await self._retrieve_memory(user_input=user_input)
+        infer_prompt = self._build_infer_prompt(
+            prompt=prompt,
+            retrieved_hits=retrieval_ctx["hits"],
+        )
+        observe_ctx = self._observe(
+            messages=messages,
+            prompt=prompt,
+            retrieval_ctx=retrieval_ctx,
+        )
         await self.kernel.init_state(session_id=session_id)
         await self.kernel.update_state(session_id=session_id, input_text=prompt)
-        model_runtime_meta, model_seed = await self._fast_system_seed(prompt)
+        model_runtime_meta, model_seed = await self._fast_system_seed(infer_prompt)
         force_insufficient_response = (
             model_runtime_meta.get("fallback_reason") == "garbage_detected"
         )
@@ -134,7 +148,13 @@ class Reasoner:
         act_response["trust_score"] = trust_score
         return act_response
 
-    def _observe(self, *, messages: list[dict[str, str]], prompt: str) -> dict[str, Any]:
+    def _observe(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        prompt: str,
+        retrieval_ctx: dict[str, Any],
+    ) -> dict[str, Any]:
         token_count = sum(len(msg.get("content", "").split()) for msg in messages)
         max_line_len = max((len(line) for line in prompt.splitlines()), default=0)
         return {
@@ -153,7 +173,62 @@ class Reasoner:
                 "token_count": token_count,
                 "max_line_length": max_line_len,
             },
+            "retrieval": {
+                "enabled": self.memory_client is not None,
+                "used": bool(retrieval_ctx.get("used", False)),
+                "hits_count": len(retrieval_ctx.get("hits", [])),
+                "hits": retrieval_ctx.get("hits", []),
+                "error": retrieval_ctx.get("error"),
+            },
         }
+
+    def _extract_user_input(
+        self, *, messages: list[dict[str, str]], fallback_prompt: str
+    ) -> str:
+        for msg in reversed(messages):
+            role = str(msg.get("role", "")).lower()
+            content = str(msg.get("content", "")).strip()
+            if role == "user" and content:
+                return content
+        return fallback_prompt.strip()
+
+    async def _retrieve_memory(self, *, user_input: str) -> dict[str, Any]:
+        if self.memory_client is None:
+            return {"used": False, "hits": [], "error": None}
+
+        top_k = max(1, int(self.memory_top_k))
+        try:
+            hits = await asyncio.to_thread(self.memory_client.retrieve, user_input, top_k)
+            normalized_hits = [
+                item.strip()
+                for item in hits
+                if isinstance(item, str) and item.strip()
+            ]
+            return {
+                "used": bool(normalized_hits),
+                "hits": normalized_hits[:top_k],
+                "error": None,
+            }
+        except Exception as exc:
+            return {
+                "used": False,
+                "hits": [],
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    def _build_infer_prompt(self, *, prompt: str, retrieved_hits: list[str]) -> str:
+        if not retrieved_hits:
+            return prompt
+        context = "\n".join(
+            f"{idx}. {snippet}"
+            for idx, snippet in enumerate(retrieved_hits, start=1)
+        )
+        return (
+            "Retrieved memory context:\n"
+            f"{context}\n\n"
+            "User conversation:\n"
+            f"{prompt}"
+        )
 
     async def _orient(
         self,
