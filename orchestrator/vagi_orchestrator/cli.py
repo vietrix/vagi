@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Annotated
@@ -9,10 +10,13 @@ import httpx
 import typer
 
 from .genesis.pipeline import GenesisConfig, train_and_export
+from .memory import MemoryClient
 
 app = typer.Typer(help="vAGI CLI")
 genesis_app = typer.Typer(help="Genesis run commands")
+memory_app = typer.Typer(help="Vector memory commands")
 app.add_typer(genesis_app, name="genesis")
+app.add_typer(memory_app, name="memory")
 
 
 def _api_url(url: str | None) -> str:
@@ -25,6 +29,12 @@ def _kernel_url(url: str | None) -> str:
     if url:
         return url.rstrip("/")
     return "http://127.0.0.1:7070"
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n+", normalized)]
+    return [chunk for chunk in chunks if chunk]
 
 
 @app.command()
@@ -103,6 +113,56 @@ def benchmark(
     typer.echo(
         f"benchmark runs={n} p50={p50:.2f}ms avg={(sum(latencies)/len(latencies)):.2f}ms"
     )
+
+
+@memory_app.command("ingest")
+def memory_ingest(
+    file_path: str,
+    kernel_url: Annotated[str | None, typer.Option("--kernel-url")] = None,
+) -> None:
+    path = Path(file_path)
+    if not path.exists():
+        raise typer.BadParameter(f"file not found: {path}")
+    if not path.is_file():
+        raise typer.BadParameter(f"path is not a file: {path}")
+
+    text = path.read_text(encoding="utf-8")
+    paragraphs = _split_paragraphs(text)
+    if not paragraphs:
+        raise typer.BadParameter("file does not contain non-empty paragraphs")
+
+    client = MemoryClient(kernel_url=_kernel_url(kernel_url))
+    success = 0
+    failed = 0
+    total = len(paragraphs)
+    for index, paragraph in enumerate(paragraphs, start=1):
+        try:
+            if client.add_document(paragraph):
+                success += 1
+                typer.echo(f"[{index}/{total}] ingested")
+            else:
+                failed += 1
+                typer.echo(f"[{index}/{total}] failed: missing document id", err=True)
+        except Exception as exc:
+            failed += 1
+            typer.echo(f"[{index}/{total}] failed: {exc}", err=True)
+
+    typer.echo(f"ingest_total={total} success={success} failed={failed}")
+
+
+@memory_app.command("query")
+def memory_query(
+    question: str,
+    top_k: Annotated[int, typer.Option("--top-k")] = 3,
+    kernel_url: Annotated[str | None, typer.Option("--kernel-url")] = None,
+) -> None:
+    client = MemoryClient(kernel_url=_kernel_url(kernel_url))
+    results = client.search(question, top_k=top_k)
+    if not results:
+        typer.echo("No memory hits.")
+        return
+    for idx, item in enumerate(results, start=1):
+        typer.echo(f"{idx}. {item}")
 
 
 @genesis_app.command("train")

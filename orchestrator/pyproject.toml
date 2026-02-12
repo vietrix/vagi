@@ -13,6 +13,7 @@ dependencies = [
   "httpx==0.28.1",
   "orjson==3.11.3",
   "pydantic==2.11.7",
+  "sentence-transformers>=3.0",
   "typer==0.16.1",
   "uvicorn==0.40.0",
 ]
