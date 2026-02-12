@@ -20,7 +20,10 @@
             "required": ["role", "content"],
             "properties": {
               "role": { "type": "string", "const": "assistant" },
-              "content": { "type": "string" }
+              "content": {
+                "type": "string",
+                "description": "Assistant response text with runtime footer: [Kernel: Active | Verifier: Pass/Fail | Latency: {ms}]"
+              }
             }
           },
           "finish_reason": { "type": "string", "const": "stop" }
@@ -63,11 +66,12 @@
         },
         "model_runtime": {
           "type": "object",
-          "required": ["used", "model_id", "fallback_reason"],
+          "required": ["used", "model_id", "fallback_reason", "latency_ms"],
           "properties": {
             "used": { "type": "boolean" },
             "model_id": { "type": ["string", "null"] },
-            "fallback_reason": { "type": ["string", "null"] }
+            "fallback_reason": { "type": ["string", "null"] },
+            "latency_ms": { "type": "integer" }
           }
         }
       }

@@ -38,7 +38,16 @@ class FakeKernel:
         return {"loaded": True, "model_id": "genesis-v0"}
 
     async def model_infer(self, prompt: str, max_new_tokens: int = 96) -> dict:
-        return {"model_id": "genesis-v0", "text": "Assistant: Toi se phan tich va de xuat patch an toan."}
+        return {
+            "model_id": "genesis-v0",
+            "text": "Assistant: Toi se phan tich va de xuat patch an toan.",
+            "latency_ms": 11,
+        }
+
+
+class FakeKernelGarbage(FakeKernel):
+    async def model_infer(self, prompt: str, max_new_tokens: int = 96) -> dict:
+        return {"model_id": "genesis-v0", "text": "aaaaaaaaaaaaaaaa", "latency_ms": 7}
 
 
 def test_reasoner_backtracks_until_safe(tmp_path: Path) -> None:
@@ -68,4 +77,27 @@ def test_reasoner_backtracks_until_safe(tmp_path: Path) -> None:
     assert result["metadata"]["model_runtime"]["used"] is True
     metrics = store.metrics()
     assert metrics["total_episodes"] == 1
+    store.close()
+
+
+def test_reasoner_returns_deterministic_fallback_when_model_garbage(tmp_path: Path) -> None:
+    store = EpisodeStore(
+        db_path=tmp_path / "episodes.db",
+        long_term_path=tmp_path / "memory.jsonl",
+    )
+    reasoner = Reasoner(
+        kernel=FakeKernelGarbage(),  # type: ignore[arg-type]
+        store=store,
+        max_decide_iters=3,
+        risk_threshold=0.7,
+    )
+    result = asyncio.run(
+        reasoner.run_chat(
+            session_id="sid-garbage",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+    )
+    assert result["content"] == "Insufficient data in kernel state."
+    assert result["metadata"]["model_runtime"]["used"] is False
+    assert result["metadata"]["model_runtime"]["fallback_reason"] == "garbage_detected"
     store.close()

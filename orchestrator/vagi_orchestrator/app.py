@@ -170,7 +170,17 @@ def create_app(
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:18]}"
         created = int(time.time())
-        text = result["content"]
+        raw_text = result["content"]
+        kernel_latency_ms = int(
+            result.get("metadata", {})
+            .get("model_runtime", {})
+            .get("latency_ms", 0)
+        )
+        text = _append_runtime_footer(
+            raw_text,
+            verifier_pass=verifier_pass,
+            latency_ms=kernel_latency_ms,
+        )
         if request.stream:
             return StreamingResponse(
                 _stream_chat_chunks(
@@ -273,3 +283,12 @@ async def _stream_chat_chunks(
 
 
 app = create_app()
+
+
+def _append_runtime_footer(content: str, *, verifier_pass: bool, latency_ms: int) -> str:
+    verdict = "Pass" if verifier_pass else "Fail"
+    footer = f"[Kernel: Active | Verifier: {verdict} | Latency: {latency_ms}ms]"
+    body = content.rstrip()
+    if body:
+        return f"{body}\n{footer}"
+    return footer

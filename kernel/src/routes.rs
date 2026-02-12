@@ -24,7 +24,7 @@ pub fn build_router(ctx: Arc<KernelContext>) -> Router {
         .route("/internal/verifier/check", post(verify_patch))
         .route("/internal/model/load", post(load_model))
         .route("/internal/model/status", get(model_status))
-        .route("/internal/model/infer", post(model_infer))
+        .route("/internal/infer", post(model_infer))
         .with_state(ctx)
 }
 

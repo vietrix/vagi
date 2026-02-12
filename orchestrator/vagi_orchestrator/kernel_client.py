@@ -89,7 +89,7 @@ class KernelClient:
         self, prompt: str, max_new_tokens: int = 96
     ) -> dict[str, Any]:
         response = await self._client.post(
-            "/internal/model/infer",
+            "/internal/infer",
             json={"prompt": prompt, "max_new_tokens": max_new_tokens},
         )
         response.raise_for_status()

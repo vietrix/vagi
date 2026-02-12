@@ -43,7 +43,11 @@ class FakeKernelPass:
         return {"loaded": True, "model_id": "genesis-v0"}
 
     async def model_infer(self, prompt: str, max_new_tokens: int = 96) -> dict:
-        return {"model_id": "genesis-v0", "text": "Assistant: Da nhan yeu cau va se de xuat patch."}
+        return {
+            "model_id": "genesis-v0",
+            "text": "Assistant: Da nhan yeu cau va se de xuat patch.",
+            "latency_ms": 13,
+        }
 
 
 class FakeKernelFailVerifier(FakeKernelPass):
@@ -103,6 +107,8 @@ def test_chat_endpoint_returns_openai_shape_with_policy_metadata(tmp_path: Path)
     assert body["metadata"]["policy"]["verifier_pass"] is True
     assert body["metadata"]["model_runtime"]["used"] is True
     assert body["metadata"]["model_runtime"]["model_id"] == "genesis-v0"
+    assert body["metadata"]["model_runtime"]["latency_ms"] == 13
+    assert "[Kernel: Active | Verifier: Pass | Latency: 13ms]" in body["choices"][0]["message"]["content"]
     client.close()
 
 

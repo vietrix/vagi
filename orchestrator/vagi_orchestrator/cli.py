@@ -156,7 +156,7 @@ def genesis_infer(
 ) -> None:
     url = _kernel_url(kernel_url)
     response = httpx.post(
-        f"{url}/internal/model/infer",
+        f"{url}/internal/infer",
         json={"prompt": prompt, "max_new_tokens": max_new_tokens},
         timeout=120,
     )
@@ -182,7 +182,7 @@ def genesis_run(
     )
     load_response.raise_for_status()
     infer_response = httpx.post(
-        f"{kernel}/internal/model/infer",
+        f"{kernel}/internal/infer",
         json={"prompt": "User: Xin chao\nAssistant:", "max_new_tokens": 80},
         timeout=120,
     )
@@ -215,4 +215,3 @@ def genesis_run(
 
 if __name__ == "__main__":
     app()
-

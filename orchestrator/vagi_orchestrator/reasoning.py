@@ -29,6 +29,9 @@ def build_session_id(seed: str) -> str:
     return f"sid-{digest[:16]}"
 
 
+FALLBACK_RESPONSE = "Insufficient data in kernel state."
+
+
 @dataclass(slots=True)
 class Reasoner:
     kernel: KernelClient
@@ -52,6 +55,9 @@ class Reasoner:
         await self.kernel.init_state(session_id=session_id)
         await self.kernel.update_state(session_id=session_id, input_text=prompt)
         model_runtime_meta, model_seed = await self._fast_system_seed(prompt)
+        force_insufficient_response = (
+            model_runtime_meta.get("fallback_reason") == "garbage_detected"
+        )
 
         # ORIENT
         orient_ctx = await self._orient(
@@ -103,6 +109,7 @@ class Reasoner:
             verifier=final_verifier,
             ooda_trace=ooda_trace,
             model_runtime_meta=model_runtime_meta,
+            force_insufficient_response=force_insufficient_response,
         )
         trust_score = compute_trust_score(
             source="chat",
@@ -260,18 +267,21 @@ class Reasoner:
                         "used": False,
                         "model_id": None,
                         "fallback_reason": "model_not_loaded",
+                        "latency_ms": 0,
                     },
                     None,
                 )
             infer = await self.kernel.model_infer(prompt=prompt, max_new_tokens=96)
             text = str(infer.get("text", "")).strip()
             model_id = infer.get("model_id") or status.get("model_id")
-            if not text:
+            latency_ms = int(infer.get("latency_ms") or 0)
+            if self._is_garbage_model_output(text):
                 return (
                     {
                         "used": False,
                         "model_id": model_id,
-                        "fallback_reason": "empty_model_output",
+                        "fallback_reason": "garbage_detected",
+                        "latency_ms": latency_ms,
                     },
                     None,
                 )
@@ -280,6 +290,7 @@ class Reasoner:
                     "used": True,
                     "model_id": model_id,
                     "fallback_reason": None,
+                    "latency_ms": latency_ms,
                 },
                 text,
             )
@@ -289,9 +300,35 @@ class Reasoner:
                     "used": False,
                     "model_id": None,
                     "fallback_reason": f"kernel_model_infer_error:{type(exc).__name__}",
+                    "latency_ms": 0,
                 },
                 None,
             )
+
+    def _is_garbage_model_output(self, text: str) -> bool:
+        clean = text.strip()
+        if not clean or len(clean) < 8:
+            return True
+        if clean.lower() in {"assistant:", "user:", "nan", "null"}:
+            return True
+        words = clean.split()
+        if len(words) < 2:
+            return True
+        if max((len(set(chunk)) for chunk in clean.split()), default=0) <= 1:
+            return True
+        repeated_pairs = sum(
+            1 for idx in range(1, len(clean)) if clean[idx] == clean[idx - 1]
+        )
+        if repeated_pairs / max(1, len(clean) - 1) > 0.35:
+            return True
+        word_counts: dict[str, int] = {}
+        for word in words:
+            normalized = word.lower()
+            word_counts[normalized] = word_counts.get(normalized, 0) + 1
+        dominant_ratio = max(word_counts.values()) / len(words)
+        if len(words) >= 5 and dominant_ratio > 0.6:
+            return True
+        return False
 
     def _revise_draft(
         self,
@@ -326,13 +363,18 @@ class Reasoner:
         verifier: dict[str, Any],
         ooda_trace: dict[str, Any],
         model_runtime_meta: dict[str, Any],
+        force_insufficient_response: bool,
     ) -> dict[str, Any]:
-        return {
-            "content": (
+        if force_insufficient_response:
+            content = FALLBACK_RESPONSE
+        else:
+            content = (
                 "Proposed engineering artifact:\n"
                 f"{draft}\n\n"
                 f"Risk score: {sim['risk_score']:.2f} | Verifier pass: {verifier['pass']}"
-            ),
+            )
+        return {
+            "content": content,
             "metadata": {
                 "observe": observe_ctx,
                 "orient": orient_ctx,
