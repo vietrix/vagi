@@ -66,6 +66,14 @@ def _settings(tmp_path: Path) -> Settings:
         dream_minute=0,
         max_decide_iters=4,
         risk_threshold=0.65,
+        reasoner_mode="classic",
+        weaver_top_k=3,
+        mutation_enabled=True,
+        mutation_generations=2,
+        mutation_population_size=4,
+        mutation_survivors=2,
+        mutation_risk_threshold=0.65,
+        mutation_promote=True,
     )
 
 
@@ -125,4 +133,3 @@ def test_chat_endpoint_returns_422_when_verifier_gate_fails(tmp_path: Path) -> N
         for detail in body["error"]["details"]
     )
     client.close()
-

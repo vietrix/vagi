@@ -62,9 +62,20 @@ def create_app(
         store=store,
         max_decide_iters=settings.max_decide_iters,
         risk_threshold=settings.risk_threshold,
+        reasoner_mode=settings.reasoner_mode,
+        weaver_top_k=settings.weaver_top_k,
     )
     policy_engine = IdentityPolicyEngine(version="v1")
-    dream_service = DreamService(store=store)
+    dream_service = DreamService(
+        store=store,
+        kernel=kernel_client,
+        mutation_enabled=settings.mutation_enabled,
+        mutation_generations=settings.mutation_generations,
+        mutation_population_size=settings.mutation_population_size,
+        mutation_survivors=settings.mutation_survivors,
+        mutation_risk_threshold=settings.mutation_risk_threshold,
+        mutation_promote=settings.mutation_promote,
+    )
     scheduler = DreamScheduler(
         service=dream_service,
         hour=settings.dream_hour,
@@ -234,6 +245,8 @@ def create_app(
         report = await services.dream_service.run_once(source=request.source)
         services.metrics["dream_runs"] += 1
         services.metrics["promoted_episodes"] += int(report["promoted_count"])
+        services.metrics["mutation_runs"] += int(report.get("mutation_runs", 0))
+        services.metrics["mutation_promotions"] += int(report.get("mutation_promotions", 0))
         return DreamRunResponse.model_validate(report)
 
     return app

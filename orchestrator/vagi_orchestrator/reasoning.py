@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +36,8 @@ class Reasoner:
     store: EpisodeStore
     max_decide_iters: int = 12
     risk_threshold: float = 0.65
+    reasoner_mode: str = "classic"
+    weaver_top_k: int = 3
 
     async def run_chat(
         self, *, session_id: str, messages: list[dict[str, str]]
@@ -125,8 +128,10 @@ class Reasoner:
     def _observe(self, *, messages: list[dict[str, str]], prompt: str) -> dict[str, Any]:
         token_count = sum(len(msg.get("content", "").split()) for msg in messages)
         max_line_len = max((len(line) for line in prompt.splitlines()), default=0)
+        domain = self._infer_domain(prompt)
         return {
             "intent": "engineering_request",
+            "domain": domain,
             "constraints": [
                 "require verifier pass",
                 "respect risk threshold",
@@ -154,7 +159,27 @@ class Reasoner:
         else:
             priority = "correctness"
 
-        candidates = self._build_candidates(prompt=prompt, priority=priority)
+        mode = self.reasoner_mode if self.reasoner_mode in {"classic", "hybrid", "weaver"} else "classic"
+        classic_candidates = self._build_candidates(
+            prompt=prompt,
+            priority=priority,
+            domain=str(observe_ctx.get("domain", "general")),
+        )
+        weaver_candidates = []
+        if mode in {"hybrid", "weaver"}:
+            weaver_candidates = await self._build_weaver_candidates(
+                prompt=prompt,
+                priority=priority,
+                session_id=session_id,
+            )
+
+        if mode == "weaver":
+            candidates = weaver_candidates or classic_candidates
+        elif mode == "hybrid":
+            candidates = weaver_candidates + classic_candidates
+        else:
+            candidates = classic_candidates
+
         simulations: list[dict[str, Any]] = []
         for candidate in candidates:
             sim = await self.kernel.simulate_world(candidate["draft"], session_id=session_id)
@@ -176,6 +201,7 @@ class Reasoner:
             "objective": "Solve engineering task via OODA with verifier gate",
             "constraints": observe_ctx["constraints"],
             "priority": priority,
+            "reasoner_mode": mode,
             "acceptance_rules": {
                 "verifier_pass": True,
                 "max_risk_score": self.risk_threshold,
@@ -185,42 +211,134 @@ class Reasoner:
             "selected_candidate": selected_candidate,
         }
 
-    def _build_candidates(self, *, prompt: str, priority: str) -> list[dict[str, str]]:
+    def _build_candidates(self, *, prompt: str, priority: str, domain: str) -> list[dict[str, str]]:
         return [
             {
                 "id": "secure-minimal",
+                "source": "classic",
                 "draft": (
                     "Implement secure minimal patch:\n"
                     "- validate input strictly\n"
                     "- hash secret with safe primitive\n"
                     "- add timeout and rate limit\n"
+                    f"- domain: {domain}\n"
                     f"- priority: {priority}\n"
                     f"- request context:\n{prompt}"
                 ),
             },
             {
                 "id": "balanced-throughput",
+                "source": "classic",
                 "draft": (
                     "Implement balanced throughput patch:\n"
                     "- keep interface stable\n"
                     "- reduce extra allocations\n"
                     "- preserve audit log and safety checks\n"
+                    f"- domain: {domain}\n"
                     f"- priority: {priority}\n"
                     f"- request context:\n{prompt}"
                 ),
             },
             {
                 "id": "memory-conservative",
+                "source": "classic",
                 "draft": (
                     "Implement memory-conservative patch:\n"
                     "- avoid retaining large temporary buffers\n"
                     "- stream processing with deterministic guards\n"
                     "- enforce verifier compatibility\n"
+                    f"- domain: {domain}\n"
                     f"- priority: {priority}\n"
                     f"- request context:\n{prompt}"
                 ),
             },
         ]
+
+    async def _build_weaver_candidates(
+        self,
+        *,
+        prompt: str,
+        priority: str,
+        session_id: str,
+    ) -> list[dict[str, str]]:
+        weave_plan = getattr(self.kernel, "weave_plan", None)
+        if weave_plan is None:
+            return []
+
+        bindings = self._derive_bindings_from_prompt(prompt)
+        input_value = max(1, len(prompt.split()))
+        plan = await weave_plan(
+            query=prompt,
+            input_value=input_value,
+            bindings=bindings,
+            top_k=self.weaver_top_k,
+            risk_threshold=self.risk_threshold,
+            verifier_required=True,
+            session_id=session_id,
+        )
+        if not plan:
+            return []
+
+        candidates_payload = list(plan.get("candidates", []))
+        if not candidates_payload:
+            return []
+        accepted = [entry for entry in candidates_payload if bool(entry.get("accepted", False))]
+        if not accepted:
+            return []
+        selected_pool = accepted[: self.weaver_top_k]
+
+        candidates: list[dict[str, str]] = []
+        for idx, entry in enumerate(selected_pool):
+            template_id = str(entry.get("template_id", f"template-{idx}"))
+            bound_logic = str(entry.get("bound_logic", "")).strip()
+            similarity = float(entry.get("similarity", 0.0))
+            risk_score = float(entry.get("risk_score", 1.0))
+            verifier_pass = bool(entry.get("verifier_pass", False))
+            output_value = int(entry.get("output", 0))
+            draft = (
+                f"Implement via Weaver template `{template_id}`:\n"
+                f"- source: hdc-weaver\n"
+                f"- priority: {priority}\n"
+                f"- similarity: {similarity:.3f}\n"
+                f"- risk_preview: {risk_score:.2f}\n"
+                f"- verifier_preview: {verifier_pass}\n"
+                f"- jit_preview_output: {output_value}\n"
+                f"- bound_logic:\n{bound_logic}\n"
+                f"- request context:\n{prompt}"
+            )
+            candidates.append(
+                {
+                    "id": f"weaver-{template_id}-{idx}",
+                    "source": "weaver",
+                    "draft": draft,
+                }
+            )
+        return candidates
+
+    def _derive_bindings_from_prompt(self, prompt: str) -> dict[str, str]:
+        values = re.findall(r"-?\d+", prompt)
+        bindings = {
+            "delta": values[0] if values else "5",
+            "mask": values[1] if len(values) >= 2 else "3",
+        }
+        return bindings
+
+    def _infer_domain(self, prompt: str) -> str:
+        lower = prompt.lower()
+        mapping = [
+            ("python", "python"),
+            ("rust", "rust"),
+            ("javascript", "javascript"),
+            ("typescript", "typescript"),
+            ("sql", "database"),
+            ("database", "database"),
+            ("security", "security"),
+            ("auth", "security"),
+        ]
+        for needle, domain in mapping:
+            if needle in lower:
+                return domain
+        return "general"
 
     def _revise_draft(
         self,

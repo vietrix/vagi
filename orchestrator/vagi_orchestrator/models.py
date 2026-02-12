@@ -74,10 +74,13 @@ class DreamRunResponse(BaseModel):
     regression_fail: int
     threshold: float
     promoted_episode_ids: list[int]
+    mutation_runs: int = 0
+    mutation_promotions: int = 0
+    mutation_errors: list[str] = Field(default_factory=list)
+    mutation_report: dict[str, Any] | None = None
 
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     kernel_reachable: bool
     runtime_dir: str
-

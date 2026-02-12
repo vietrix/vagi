@@ -72,3 +72,62 @@ class KernelClient:
         response.raise_for_status()
         return response.json()
 
+    async def weave_plan(
+        self,
+        *,
+        query: str,
+        input_value: int,
+        bindings: dict[str, str] | None = None,
+        top_k: int = 3,
+        risk_threshold: float = 0.65,
+        verifier_required: bool = True,
+        session_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        response = await self._client.post(
+            "/internal/hdc/weave/plan",
+            json={
+                "query": query,
+                "input": input_value,
+                "top_k": max(1, min(top_k, 10)),
+                "risk_threshold": risk_threshold,
+                "verifier_required": verifier_required,
+                "session_id": session_id,
+                "bindings": bindings or {},
+            },
+        )
+        if response.status_code in {400, 404, 422}:
+            return None
+        response.raise_for_status()
+        return response.json()
+
+    async def evolve_templates(
+        self,
+        *,
+        template_id: str | None = None,
+        query: str | None = None,
+        generations: int = 3,
+        population_size: int = 8,
+        survivors: int = 2,
+        risk_threshold: float = 0.65,
+        seed_input: int = 13,
+        promote: bool = True,
+    ) -> dict[str, Any] | None:
+        population_size = max(2, min(population_size, 64))
+        survivors = max(1, min(survivors, population_size))
+        response = await self._client.post(
+            "/internal/hdc/evolution/mutate",
+            json={
+                "template_id": template_id,
+                "query": query,
+                "generations": max(1, min(generations, 20)),
+                "population_size": population_size,
+                "survivors": survivors,
+                "risk_threshold": risk_threshold,
+                "seed_input": seed_input,
+                "promote": promote,
+            },
+        )
+        if response.status_code in {400, 404, 422}:
+            return None
+        response.raise_for_status()
+        return response.json()
