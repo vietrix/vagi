@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .kernel_client import KernelClient
-from .memory import MemoryClient
+from .memory import MemoryClient, MemoryHit
 from .store import EpisodeStore
 
 
@@ -42,6 +42,7 @@ class Reasoner:
     risk_threshold: float = 0.65
     memory_client: MemoryClient | None = None
     memory_top_k: int = 3
+    memory_min_score: float = 0.2
 
     async def run_chat(
         self, *, session_id: str, messages: list[dict[str, str]]
@@ -59,7 +60,7 @@ class Reasoner:
         retrieval_ctx = await self._retrieve_memory(user_input=user_input)
         infer_prompt = self._build_infer_prompt(
             prompt=prompt,
-            retrieved_hits=retrieval_ctx["hits"],
+            retrieved_hits=retrieval_ctx["scored_hits"],
         )
         observe_ctx = self._observe(
             messages=messages,
@@ -178,6 +179,7 @@ class Reasoner:
                 "used": bool(retrieval_ctx.get("used", False)),
                 "hits_count": len(retrieval_ctx.get("hits", [])),
                 "hits": retrieval_ctx.get("hits", []),
+                "scored_hits": retrieval_ctx.get("scored_hits", []),
                 "error": retrieval_ctx.get("error"),
             },
         }
@@ -194,34 +196,44 @@ class Reasoner:
 
     async def _retrieve_memory(self, *, user_input: str) -> dict[str, Any]:
         if self.memory_client is None:
-            return {"used": False, "hits": [], "error": None}
+            return {"used": False, "hits": [], "scored_hits": [], "error": None}
 
         top_k = max(1, int(self.memory_top_k))
         try:
-            hits = await asyncio.to_thread(self.memory_client.retrieve, user_input, top_k)
+            hits = await asyncio.to_thread(self.memory_client.retrieve_hits, user_input, top_k)
+            filtered_hits = [
+                hit for hit in hits if isinstance(hit, MemoryHit) and hit.score >= self.memory_min_score
+            ]
             normalized_hits = [
-                item.strip()
-                for item in hits
-                if isinstance(item, str) and item.strip()
+                hit.text.strip()
+                for hit in filtered_hits
+                if isinstance(hit.text, str) and hit.text.strip()
+            ]
+            scored_hits = [
+                {"text": hit.text.strip(), "score": round(float(hit.score), 6)}
+                for hit in filtered_hits
+                if isinstance(hit.text, str) and hit.text.strip()
             ]
             return {
                 "used": bool(normalized_hits),
                 "hits": normalized_hits[:top_k],
+                "scored_hits": scored_hits[:top_k],
                 "error": None,
             }
         except Exception as exc:
             return {
                 "used": False,
                 "hits": [],
+                "scored_hits": [],
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
-    def _build_infer_prompt(self, *, prompt: str, retrieved_hits: list[str]) -> str:
+    def _build_infer_prompt(self, *, prompt: str, retrieved_hits: list[dict[str, Any]]) -> str:
         if not retrieved_hits:
             return prompt
         context = "\n".join(
-            f"{idx}. {snippet}"
-            for idx, snippet in enumerate(retrieved_hits, start=1)
+            f"{idx}. (score={float(item.get('score', 0.0)):.3f}) {item.get('text', '')}"
+            for idx, item in enumerate(retrieved_hits, start=1)
         )
         return (
             "Retrieved memory context:\n"

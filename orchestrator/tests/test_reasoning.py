@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 from vagi_orchestrator.reasoning import Reasoner
+from vagi_orchestrator.memory import MemoryHit
 from vagi_orchestrator.store import EpisodeStore
 
 
@@ -59,10 +60,10 @@ class FakeMemoryClient:
         self.last_query: str | None = None
         self.last_top_k: int | None = None
 
-    def retrieve(self, query: str, top_k: int = 3) -> list[str]:
+    def retrieve_hits(self, query: str, top_k: int = 3) -> list[MemoryHit]:
         self.last_query = query
         self.last_top_k = top_k
-        return self._hits[:top_k]
+        return [MemoryHit(text=hit, score=0.9) for hit in self._hits[:top_k]]
 
 
 def test_reasoner_backtracks_until_safe(tmp_path: Path) -> None:

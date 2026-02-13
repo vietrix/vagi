@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 
 import vagi_orchestrator.cli as cli_module
 from vagi_orchestrator.cli import app
+from vagi_orchestrator.memory import MemoryAnswer, MemoryHit
 
 
 def test_split_paragraphs_handles_blank_lines() -> None:
@@ -43,16 +44,29 @@ def test_memory_ask_command_prints_hits(monkeypatch: pytest.MonkeyPatch) -> None
             self.kernel_url = kernel_url
             self.timeout = timeout
 
-        def retrieve(self, query: str, top_k: int = 3) -> list[str]:
-            return ["doc A", "doc B"]
+        def answer(
+            self,
+            query: str,
+            top_k: int = 3,
+            min_score: float = 0.2,
+            max_sentences: int = 3,
+        ) -> MemoryAnswer:
+            return MemoryAnswer(
+                answer="vAGI la he thong mo phong tu duy.",
+                hits=[
+                    MemoryHit(text="doc A", score=0.91),
+                    MemoryHit(text="doc B", score=0.84),
+                ],
+            )
 
     monkeypatch.setattr(cli_module, "MemoryClient", FakeClient)
 
     runner = CliRunner()
     result = runner.invoke(app, ["memory", "ask", "what is auth", "--top-k", "2"])
     assert result.exit_code == 0
-    assert "1. doc A" in result.stdout
-    assert "2. doc B" in result.stdout
+    assert "vAGI la he thong mo phong tu duy." in result.stdout
+    assert "1. score=0.910 | doc A" in result.stdout
+    assert "2. score=0.840 | doc B" in result.stdout
 
 
 def test_memory_alias_commands_still_work(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -64,8 +78,17 @@ def test_memory_alias_commands_still_work(monkeypatch: pytest.MonkeyPatch) -> No
         def ingest_file(self, file_path: str) -> dict[str, int]:
             return {"total": 1, "success": 1, "failed": 0}
 
-        def retrieve(self, query: str, top_k: int = 3) -> list[str]:
-            return ["doc alias"]
+        def answer(
+            self,
+            query: str,
+            top_k: int = 3,
+            min_score: float = 0.2,
+            max_sentences: int = 3,
+        ) -> MemoryAnswer:
+            return MemoryAnswer(
+                answer="doc alias answer",
+                hits=[MemoryHit(text="doc alias", score=0.77)],
+            )
 
     monkeypatch.setattr(cli_module, "MemoryClient", FakeClient)
     runner = CliRunner()
@@ -76,4 +99,5 @@ def test_memory_alias_commands_still_work(monkeypatch: pytest.MonkeyPatch) -> No
 
     query_result = runner.invoke(app, ["memory", "query", "q"])
     assert query_result.exit_code == 0
-    assert "1. doc alias" in query_result.stdout
+    assert "doc alias answer" in query_result.stdout
+    assert "1. score=0.770 | doc alias" in query_result.stdout

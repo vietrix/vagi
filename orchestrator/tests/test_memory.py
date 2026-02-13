@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from vagi_orchestrator import memory as memory_module
-from vagi_orchestrator.memory import EmbeddingService, MemoryClient
+from vagi_orchestrator.memory import EmbeddingService, MemoryClient, MemoryHit
 
 
 class FakeVector:
@@ -110,10 +110,15 @@ def test_memory_client_retrieve_returns_text_list(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(memory_module.httpx, "post", fake_post)
 
     client = MemoryClient(kernel_url="http://kernel")
+    scored_hits = client.retrieve_hits("what is login", top_k=2)
+    assert scored_hits == [
+        MemoryHit(text="doc 1", score=0.98),
+        MemoryHit(text="doc 2", score=0.76),
+    ]
     hits = client.retrieve("what is login", top_k=2)
     assert hits == ["doc 1", "doc 2"]
     assert payload_capture["url"] == "http://kernel/internal/memory/search"
-    assert payload_capture["json"] == {"vector": [0.9, 0.1], "top_k": 2}
+    assert payload_capture["json"] == {"vector": [0.9, 0.1], "top_k": 16}
 
 
 def test_memory_client_retrieve_validates_top_k() -> None:
@@ -140,3 +145,26 @@ def test_memory_client_ingest_file_splits_paragraphs(
 
     assert uploaded == ["alpha", "beta", "gamma"]
     assert summary == {"total": 3, "success": 3, "failed": 0}
+
+
+def test_memory_client_answer_returns_joined_sentences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        MemoryClient,
+        "retrieve_hits",
+        lambda self, query, top_k=3: [
+            MemoryHit(
+                text="vAGI la he thong mo phong tu duy de giai quyet bai toan ky thuat.",
+                score=0.92,
+            ),
+            MemoryHit(
+                text="Kien truc su dung OODA loop va verifier de giam hallucination.",
+                score=0.88,
+            ),
+        ][:top_k],
+    )
+    client = MemoryClient(kernel_url="http://kernel")
+    answer = client.answer("vAGI la gi", top_k=2, min_score=0.2, max_sentences=2)
+    assert "vAGI la he thong mo phong tu duy" in answer.answer
+    assert len(answer.hits) == 2

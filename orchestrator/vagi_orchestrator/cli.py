@@ -37,6 +37,13 @@ def _split_paragraphs(text: str) -> list[str]:
     return [chunk for chunk in chunks if chunk]
 
 
+def _preview_text(text: str, limit: int = 180) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "..."
+
+
 @app.command()
 def chat(
     prompt: str,
@@ -121,7 +128,11 @@ def memory_learn(
     kernel_url: Annotated[str | None, typer.Option("--kernel-url")] = None,
 ) -> None:
     client = MemoryClient(kernel_url=_kernel_url(kernel_url))
-    summary = client.ingest_file(file_path)
+    try:
+        summary = client.ingest_file(file_path)
+    except Exception as exc:
+        typer.secho(f"Memory ingest failed: {type(exc).__name__}: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
     typer.echo(
         f"learn_total={summary['total']} success={summary['success']} failed={summary['failed']}"
     )
@@ -139,24 +150,44 @@ def memory_ingest(
 def memory_ask(
     question: str,
     top_k: Annotated[int, typer.Option("--top-k")] = 3,
+    min_score: Annotated[float, typer.Option("--min-score")] = 0.05,
+    show_hits: Annotated[bool, typer.Option("--show-hits")] = True,
     kernel_url: Annotated[str | None, typer.Option("--kernel-url")] = None,
 ) -> None:
     client = MemoryClient(kernel_url=_kernel_url(kernel_url))
-    results = client.retrieve(question, top_k=top_k)
-    if not results:
+    try:
+        result = client.answer(question, top_k=top_k, min_score=min_score)
+    except Exception as exc:
+        typer.secho(f"Memory query failed: {type(exc).__name__}: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    if not result.hits or not result.answer:
         typer.echo("No memory hits.")
         return
-    for idx, item in enumerate(results, start=1):
-        typer.echo(f"{idx}. {item}")
+
+    typer.echo(result.answer)
+    if show_hits:
+        typer.echo("")
+        typer.echo("Nguon tham chieu:")
+        for idx, hit in enumerate(result.hits, start=1):
+            typer.echo(f"{idx}. score={hit.score:.3f} | {_preview_text(hit.text)}")
 
 
 @memory_app.command("query")
 def memory_query(
     question: str,
     top_k: Annotated[int, typer.Option("--top-k")] = 3,
+    min_score: Annotated[float, typer.Option("--min-score")] = 0.05,
+    show_hits: Annotated[bool, typer.Option("--show-hits")] = True,
     kernel_url: Annotated[str | None, typer.Option("--kernel-url")] = None,
 ) -> None:
-    memory_ask(question=question, top_k=top_k, kernel_url=kernel_url)
+    memory_ask(
+        question=question,
+        top_k=top_k,
+        min_score=min_score,
+        show_hits=show_hits,
+        kernel_url=kernel_url,
+    )
 
 
 @genesis_app.command("train")
