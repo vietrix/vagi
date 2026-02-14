@@ -8,11 +8,12 @@ use axum::{Json, Router};
 
 use crate::KernelContext;
 use crate::models::{
-    ErrorResponse, HealthResponse, InitStateRequest, MemoryAddRequest, MemoryAddResponse,
-    MemorySearchItem, MemorySearchRequest, MemorySearchResponse, ModelInferRequest,
-    ModelInferResponse, ModelLoadRequest, ModelLoadResponse, ModelStatusResponse, SnapshotRequest,
-    SnapshotResponse, UpdateStateRequest, VerifierRequest, VerifierResponse, WorldSimulateRequest,
-    WorldSimulateResponse,
+    ErrorResponse, HealthResponse, InitStateRequest, MctsInferRequest, MctsInferResponse,
+    MemoryAddRequest, MemoryAddResponse, MemoryAddTextRequest, MemoryEmbedRequest,
+    MemoryEmbedResponse, MemorySearchItem, MemorySearchRequest, MemorySearchResponse,
+    ModelInferRequest, ModelInferResponse, ModelLoadRequest, ModelLoadResponse,
+    ModelStatusResponse, SnapshotRequest, SnapshotResponse, UpdateStateRequest, VerifierRequest,
+    VerifierResponse, WorldSimulateRequest, WorldSimulateResponse,
 };
 
 pub fn build_router(ctx: Arc<KernelContext>) -> Router {
@@ -25,10 +26,13 @@ pub fn build_router(ctx: Arc<KernelContext>) -> Router {
         .route("/internal/world/simulate", post(simulate_world))
         .route("/internal/verifier/check", post(verify_patch))
         .route("/internal/memory/add", post(memory_add))
+        .route("/internal/memory/add_text", post(memory_add_text))
+        .route("/internal/memory/embed", post(memory_embed))
         .route("/internal/memory/search", post(memory_search))
         .route("/internal/model/load", post(load_model))
         .route("/internal/model/status", get(model_status))
         .route("/internal/infer", post(model_infer))
+        .route("/internal/infer/mcts", post(model_infer_mcts))
         .with_state(ctx)
 }
 
@@ -118,6 +122,46 @@ async fn memory_add(
     Ok(Json(MemoryAddResponse { id }))
 }
 
+async fn memory_add_text(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<MemoryAddTextRequest>,
+) -> Result<Json<MemoryAddResponse>, ApiError> {
+    let text = request.text.trim().to_string();
+    if text.is_empty() {
+        return Err(ApiError::bad_request("text must not be empty"));
+    }
+    let engine = Arc::clone(&ctx.embedding_engine);
+    let store = Arc::clone(&ctx.memory_store);
+    let embed_text = text.clone();
+    let (vector, id) = tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<f32>, uuid::Uuid)> {
+        let vector = engine.embed(&embed_text)?;
+        let id = store.add(text, vector.clone())?;
+        Ok((vector, id))
+    })
+    .await
+    .map_err(|err| ApiError::internal(format!("task failed: {err}")))?
+    .map_err(ApiError::bad_request)?;
+    let _ = vector;
+    Ok(Json(MemoryAddResponse { id }))
+}
+
+async fn memory_embed(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<MemoryEmbedRequest>,
+) -> Result<Json<MemoryEmbedResponse>, ApiError> {
+    let text = request.text.trim().to_string();
+    if text.is_empty() {
+        return Err(ApiError::bad_request("text must not be empty"));
+    }
+    let engine = Arc::clone(&ctx.embedding_engine);
+    let vector = tokio::task::spawn_blocking(move || engine.embed(&text))
+        .await
+        .map_err(|err| ApiError::internal(format!("task failed: {err}")))?
+        .map_err(ApiError::bad_request)?;
+    let dim = vector.len();
+    Ok(Json(MemoryEmbedResponse { vector, dim }))
+}
+
 async fn memory_search(
     State(ctx): State<Arc<KernelContext>>,
     Json(request): Json<MemorySearchRequest>,
@@ -160,6 +204,36 @@ async fn model_infer(
         .model_runtime
         .infer(&request.prompt, request.max_new_tokens.unwrap_or(64))
         .map_err(ApiError::bad_request)?;
+    Ok(Json(response))
+}
+
+async fn model_infer_mcts(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<MctsInferRequest>,
+) -> Result<Json<MctsInferResponse>, ApiError> {
+    let runtime = Arc::clone(&ctx.model_runtime);
+    let mcts = Arc::clone(&ctx.mcts_engine);
+    let verifier = Arc::clone(&ctx.verifier);
+    let world = Arc::clone(&ctx.world_model);
+    let prompt = request.prompt;
+    let max_tokens = request.max_new_tokens.unwrap_or(64);
+
+    let response = tokio::task::spawn_blocking(move || {
+        let mut engine = (*mcts).clone();
+        if let Some(branches) = request.num_branches {
+            engine.config.num_branches = branches.clamp(2, 8);
+        }
+        if let Some(c) = request.exploration_c {
+            engine.config.exploration_c = c.clamp(0.1, 4.0);
+        }
+        engine.config.max_depth = max_tokens.clamp(1, 256);
+
+        runtime.infer_mcts(&prompt, &engine, &verifier, &world)
+    })
+    .await
+    .map_err(|err| ApiError::internal(format!("mcts task failed: {err}")))?
+    .map_err(ApiError::bad_request)?;
+
     Ok(Json(response))
 }
 

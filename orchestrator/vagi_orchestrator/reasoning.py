@@ -80,6 +80,7 @@ class Reasoner:
             observe_ctx=observe_ctx,
             session_id=session_id,
             model_seed=model_seed,
+            mcts_meta=model_runtime_meta.get("mcts_meta"),
         )
         draft = orient_ctx["selected_candidate"]["draft"]
 
@@ -249,6 +250,7 @@ class Reasoner:
         observe_ctx: dict[str, Any],
         session_id: str,
         model_seed: str | None,
+        mcts_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         lower = prompt.lower()
         if "speed" in lower or "latency" in lower:
@@ -262,6 +264,7 @@ class Reasoner:
             prompt=prompt,
             priority=priority,
             model_seed=model_seed,
+            mcts_meta=mcts_meta,
         )
         simulations: list[dict[str, Any]] = []
         for candidate in candidates:
@@ -294,7 +297,8 @@ class Reasoner:
         }
 
     def _build_candidates(
-        self, *, prompt: str, priority: str, model_seed: str | None
+        self, *, prompt: str, priority: str, model_seed: str | None,
+        mcts_meta: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         candidates = [
             {
@@ -332,6 +336,11 @@ class Reasoner:
             },
         ]
         if model_seed:
+            mcts_info = ""
+            if mcts_meta:
+                branches = mcts_meta.get("branches_explored", 0)
+                reward = mcts_meta.get("best_branch_reward", 0.0)
+                mcts_info = f"\n- MCTS: {branches} branches explored, best reward={reward:.3f}"
             candidates.insert(
                 0,
                 {
@@ -339,7 +348,7 @@ class Reasoner:
                     "draft": (
                         "Model-seeded draft:\n"
                         f"{model_seed}\n"
-                        "- Enforce deterministic safeguards before final act."
+                        f"- Enforce deterministic safeguards before final act.{mcts_info}"
                     ),
                 },
             )
@@ -355,11 +364,29 @@ class Reasoner:
                         "model_id": None,
                         "fallback_reason": "model_not_loaded",
                         "latency_ms": 0,
+                        "mcts_meta": None,
                     },
                     None,
                 )
-            infer = await self.kernel.model_infer(prompt=prompt, max_new_tokens=96)
-            text = str(infer.get("text", "")).strip()
+
+            # Try MCTS-based inference first for multi-branch reasoning.
+            mcts_meta: dict[str, Any] | None = None
+            infer: dict[str, Any] | None = None
+            try:
+                mcts_result = await self.kernel.model_infer_mcts(
+                    prompt=prompt, max_new_tokens=64, num_branches=3
+                )
+                text = str(mcts_result.get("text", "")).strip()
+                mcts_meta = {
+                    "branches_explored": mcts_result.get("branches_explored", 0),
+                    "best_branch_reward": float(mcts_result.get("best_branch_reward", 0.0)),
+                }
+                infer = mcts_result
+            except Exception:
+                # Fallback to greedy inference if MCTS fails.
+                infer = await self.kernel.model_infer(prompt=prompt, max_new_tokens=96)
+                text = str(infer.get("text", "")).strip()
+
             model_id = infer.get("model_id") or status.get("model_id")
             latency_ms = int(infer.get("latency_ms") or 0)
             if self._is_garbage_model_output(text):
@@ -369,6 +396,7 @@ class Reasoner:
                         "model_id": model_id,
                         "fallback_reason": "garbage_detected",
                         "latency_ms": latency_ms,
+                        "mcts_meta": mcts_meta,
                     },
                     None,
                 )
@@ -378,6 +406,7 @@ class Reasoner:
                     "model_id": model_id,
                     "fallback_reason": None,
                     "latency_ms": latency_ms,
+                    "mcts_meta": mcts_meta,
                 },
                 text,
             )
@@ -388,6 +417,7 @@ class Reasoner:
                     "model_id": None,
                     "fallback_reason": f"kernel_model_infer_error:{type(exc).__name__}",
                     "latency_ms": 0,
+                    "mcts_meta": None,
                 },
                 None,
             )

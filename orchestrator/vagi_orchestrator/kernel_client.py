@@ -94,3 +94,27 @@ class KernelClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def model_infer_mcts(
+        self,
+        prompt: str,
+        max_new_tokens: int = 64,
+        num_branches: int | None = None,
+        exploration_c: float | None = None,
+    ) -> dict[str, Any]:
+        """Run MCTS-based inference for multi-branch reasoning."""
+        payload: dict[str, Any] = {
+            "prompt": prompt,
+            "max_new_tokens": max_new_tokens,
+        }
+        if num_branches is not None:
+            payload["num_branches"] = num_branches
+        if exploration_c is not None:
+            payload["exploration_c"] = exploration_c
+
+        response = await self._client.post(
+            "/internal/infer/mcts",
+            json=payload,
+        )
+        response.raise_for_status()
+        return response.json()

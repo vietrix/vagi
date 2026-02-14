@@ -140,6 +140,24 @@ pub struct ModelInferResponse {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct MctsInferRequest {
+    pub prompt: String,
+    pub max_new_tokens: Option<usize>,
+    pub num_branches: Option<usize>,
+    pub exploration_c: Option<f32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MctsInferResponse {
+    pub model_id: String,
+    pub text: String,
+    pub tokens_generated: usize,
+    pub branches_explored: usize,
+    pub best_branch_reward: f32,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MemoryAddRequest {
     pub text: String,
     pub vector: Vec<f32>,
@@ -165,4 +183,20 @@ pub struct MemorySearchItem {
 #[derive(Debug, Serialize)]
 pub struct MemorySearchResponse {
     pub results: Vec<MemorySearchItem>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MemoryAddTextRequest {
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MemoryEmbedRequest {
+    pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MemoryEmbedResponse {
+    pub vector: Vec<f32>,
+    pub dim: usize,
 }

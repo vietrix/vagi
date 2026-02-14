@@ -6,24 +6,7 @@ import httpx
 import pytest
 
 from vagi_orchestrator import memory as memory_module
-from vagi_orchestrator.memory import EmbeddingService, MemoryClient, MemoryHit
-
-
-class FakeVector:
-    def __init__(self, values: list[float]) -> None:
-        self._values = values
-
-    def tolist(self) -> list[float]:
-        return self._values
-
-
-class FakeModel:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, bool]] = []
-
-    def encode(self, text: str, convert_to_numpy: bool = True) -> FakeVector:
-        self.calls.append((text, convert_to_numpy))
-        return FakeVector([0.01] * 384)
+from vagi_orchestrator.memory import MemoryClient, MemoryHit
 
 
 class FakeResponse:
@@ -44,21 +27,7 @@ class FakeResponse:
         return self._payload
 
 
-def test_embedding_service_embed_normalizes_and_converts(monkeypatch: pytest.MonkeyPatch) -> None:
-    model = FakeModel()
-    monkeypatch.setattr(
-        EmbeddingService,
-        "_get_model",
-        classmethod(lambda cls: model),
-    )
-
-    vector = EmbeddingService.embed("  hello world  ")
-    assert len(vector) == 384
-    assert all(value == 0.01 for value in vector)
-    assert model.calls == [("hello world", True)]
-
-
-def test_memory_client_add_document_posts_expected_payload(
+def test_memory_client_add_document_posts_text_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload_capture: dict[str, object] = {}
@@ -69,30 +38,22 @@ def test_memory_client_add_document_posts_expected_payload(
         payload_capture["timeout"] = timeout
         return FakeResponse({"id": "f30366bc-5bc8-4a11-9ef8-e4db7d74f57e"})
 
-    monkeypatch.setattr(
-        EmbeddingService,
-        "embed",
-        classmethod(lambda cls, text: [0.1, 0.2, 0.3]),
-    )
     monkeypatch.setattr(memory_module.httpx, "post", fake_post)
 
     client = MemoryClient(kernel_url="http://127.0.0.1:7070", timeout=9.0)
     assert client.add_document("paragraph text") is True
-    assert payload_capture["url"] == "http://127.0.0.1:7070/internal/memory/add"
-    assert payload_capture["json"] == {
-        "text": "paragraph text",
-        "vector": [0.1, 0.2, 0.3],
-    }
+    assert payload_capture["url"] == "http://127.0.0.1:7070/internal/memory/add_text"
+    assert payload_capture["json"] == {"text": "paragraph text"}
     assert payload_capture["timeout"] == 9.0
 
 
 def test_memory_client_retrieve_returns_text_list(monkeypatch: pytest.MonkeyPatch) -> None:
-    payload_capture: dict[str, object] = {}
+    call_log: list[dict[str, object]] = []
 
     def fake_post(url: str, json: dict, timeout: float) -> FakeResponse:
-        payload_capture["url"] = url
-        payload_capture["json"] = json
-        payload_capture["timeout"] = timeout
+        call_log.append({"url": url, "json": json, "timeout": timeout})
+        if "/embed" in url:
+            return FakeResponse({"vector": [0.9, 0.1], "dim": 2})
         return FakeResponse(
             {
                 "results": [
@@ -102,11 +63,6 @@ def test_memory_client_retrieve_returns_text_list(monkeypatch: pytest.MonkeyPatc
             }
         )
 
-    monkeypatch.setattr(
-        EmbeddingService,
-        "embed",
-        classmethod(lambda cls, text: [0.9, 0.1]),
-    )
     monkeypatch.setattr(memory_module.httpx, "post", fake_post)
 
     client = MemoryClient(kernel_url="http://kernel")
@@ -117,8 +73,13 @@ def test_memory_client_retrieve_returns_text_list(monkeypatch: pytest.MonkeyPatc
     ]
     hits = client.retrieve("what is login", top_k=2)
     assert hits == ["doc 1", "doc 2"]
-    assert payload_capture["url"] == "http://kernel/internal/memory/search"
-    assert payload_capture["json"] == {"vector": [0.9, 0.1], "top_k": 16}
+
+    # Verify embed was called first, then search
+    embed_calls = [c for c in call_log if "/embed" in c["url"]]
+    search_calls = [c for c in call_log if "/search" in c["url"]]
+    assert len(embed_calls) >= 1
+    assert len(search_calls) >= 1
+    assert search_calls[0]["json"]["vector"] == [0.9, 0.1]
 
 
 def test_memory_client_retrieve_validates_top_k() -> None:

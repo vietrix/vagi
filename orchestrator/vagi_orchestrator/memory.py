@@ -1,25 +1,17 @@
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
-from threading import Lock
 from pathlib import Path
-from typing import Any
 
 import httpx
 
-_MODEL_NAME = "all-MiniLM-L6-v2"
-_EMBEDDING_DIM = 384
-_MODEL_LOCK = Lock()
-_MODEL_INSTANCE: Any | None = None
 _WORD_RE = re.compile(r"\b\w+\b", flags=re.UNICODE)
 _DEFINITION_QUERY_RE = re.compile(r"(?:\bl[àa]\s*g[ìi]\b)|(?:\bwhat\s+is\b)", flags=re.IGNORECASE)
 _COMMAND_LIKE_RE = re.compile(
     r"(?:\b(?:cargo|pip|python|uvicorn|npm|pnpm|yarn|go|rustc)\b)|(?:http://|https://)|(?:--\w+)|(?:[/\\])",
     flags=re.IGNORECASE,
 )
-os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 
 @dataclass(slots=True, frozen=True)
@@ -34,46 +26,11 @@ class MemoryAnswer:
     hits: list[MemoryHit]
 
 
+
 def _split_paragraphs(text: str) -> list[str]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n+", normalized)]
     return [chunk for chunk in chunks if chunk]
-
-
-class EmbeddingService:
-    @classmethod
-    def _get_model(cls) -> Any:
-        global _MODEL_INSTANCE
-        if _MODEL_INSTANCE is None:
-            with _MODEL_LOCK:
-                if _MODEL_INSTANCE is None:
-                    try:
-                        from sentence_transformers import SentenceTransformer
-                    except ModuleNotFoundError as exc:
-                        if exc.name == "sentence_transformers":
-                            raise RuntimeError(
-                                "Missing dependency `sentence-transformers`. "
-                                "Run: pip install -r orchestrator/requirements.txt"
-                            ) from exc
-                        raise
-
-                    _MODEL_INSTANCE = SentenceTransformer(_MODEL_NAME)
-        return _MODEL_INSTANCE
-
-    @classmethod
-    def embed(cls, text: str) -> list[float]:
-        normalized = text.strip()
-        if not normalized:
-            raise ValueError("text must not be empty")
-
-        model = cls._get_model()
-        vector = model.encode(normalized, convert_to_numpy=True)
-        values = [float(value) for value in vector.tolist()]
-        if len(values) != _EMBEDDING_DIM:
-            raise ValueError(
-                f"embedding dimension mismatch: expected {_EMBEDDING_DIM}, got {len(values)}"
-            )
-        return values
 
 
 class MemoryClient:
@@ -87,15 +44,25 @@ class MemoryClient:
             return url.rstrip("/")
         return "http://127.0.0.1:17070"
 
+    def _embed_via_kernel(self, text: str) -> list[float]:
+        """Delegate embedding computation to the Rust Kernel."""
+        response = httpx.post(
+            f"{self._kernel_url}/internal/memory/embed",
+            json={"text": text},
+            timeout=self._timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload["vector"]
+
     def add_document(self, text: str) -> bool:
         normalized = text.strip()
         if not normalized:
             raise ValueError("text must not be empty")
 
-        vector = EmbeddingService.embed(normalized)
         response = httpx.post(
-            f"{self._kernel_url}/internal/memory/add",
-            json={"text": normalized, "vector": vector},
+            f"{self._kernel_url}/internal/memory/add_text",
+            json={"text": normalized},
             timeout=self._timeout,
         )
         response.raise_for_status()
@@ -138,7 +105,7 @@ class MemoryClient:
         if top_k <= 0:
             raise ValueError("top_k must be greater than 0")
 
-        vector = EmbeddingService.embed(normalized)
+        vector = self._embed_via_kernel(normalized)
         request_top_k = max(top_k * 8, top_k)
         response = httpx.post(
             f"{self._kernel_url}/internal/memory/search",

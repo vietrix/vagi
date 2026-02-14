@@ -1,1 +1,2 @@
-sentence-transformers>=3.0
+# No Python ML dependencies required.
+# Embedding is computed by the Rust Kernel (candle + all-MiniLM-L6-v2).

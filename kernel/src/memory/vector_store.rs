@@ -39,7 +39,7 @@ impl VectorStore {
         let doc_id = Uuid::new_v4();
         let key = doc_id.as_u128();
         let embedding =
-            serde_json::to_vec(&vector).context("failed to serialize embedding vector")?;
+            bincode::serialize(&vector).context("failed to serialize embedding vector")?;
 
         let write_txn = self.db.begin_write()?;
         {
@@ -73,7 +73,7 @@ impl VectorStore {
             let (id_guard, vector_guard) = entry?;
             let doc_id = id_guard.value();
             let bytes = vector_guard.value();
-            let vector: Vec<f32> = serde_json::from_slice(bytes)
+            let vector: Vec<f32> = bincode::deserialize(bytes)
                 .with_context(|| format!("failed to deserialize embedding for doc {doc_id}"))?;
 
             if vector.len() != query_vec.len() {

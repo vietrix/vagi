@@ -13,23 +13,23 @@ use sha2::{Digest, Sha256};
 use crate::models::{ModelInferResponse, ModelLoadResponse, ModelStatusResponse};
 
 #[derive(Debug, Deserialize, Clone)]
-struct ModelManifest {
-    model_id: String,
-    arch: String,
-    version: String,
-    vocab_size: usize,
-    embed_dim: usize,
-    hidden_dim: usize,
-    num_layers: usize,
-    bos_id: usize,
-    eos_id: usize,
-    pad_id: usize,
-    unk_id: usize,
-    max_seq_len: usize,
-    model_file: String,
-    vocab_file: String,
-    model_sha256: String,
-    vocab_sha256: String,
+pub struct ModelManifest {
+    pub model_id: String,
+    pub arch: String,
+    pub version: String,
+    pub vocab_size: usize,
+    pub embed_dim: usize,
+    pub hidden_dim: usize,
+    pub num_layers: usize,
+    pub bos_id: usize,
+    pub eos_id: usize,
+    pub pad_id: usize,
+    pub unk_id: usize,
+    pub max_seq_len: usize,
+    pub model_file: String,
+    pub vocab_file: String,
+    pub model_sha256: String,
+    pub vocab_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,28 +38,58 @@ struct VocabFile {
 }
 
 #[derive(Debug, Clone)]
-struct GruLayerWeights {
-    weight_ih: Vec<f32>,
-    weight_hh: Vec<f32>,
-    bias_ih: Vec<f32>,
-    bias_hh: Vec<f32>,
-    input_size: usize,
+pub struct GruLayerWeights {
+    pub weight_ih: Vec<f32>,
+    pub weight_hh: Vec<f32>,
+    pub bias_ih: Vec<f32>,
+    pub bias_hh: Vec<f32>,
+    pub input_size: usize,
 }
 
 #[derive(Debug, Clone)]
-struct LoadedModel {
-    manifest: ModelManifest,
-    tokens: Vec<String>,
-    token_to_id: HashMap<String, usize>,
-    embedding: Vec<f32>,
-    gru_layers: Vec<GruLayerWeights>,
-    lm_head_weight: Vec<f32>,
-    lm_head_bias: Vec<f32>,
+pub struct LoadedModel {
+    pub manifest: ModelManifest,
+    pub tokens: Vec<String>,
+    pub token_to_id: HashMap<String, usize>,
+    pub embedding: Vec<f32>,
+    pub gru_layers: Vec<GruLayerWeights>,
+    pub lm_head_weight: Vec<f32>,
+    pub lm_head_bias: Vec<f32>,
+}
+
+/// Dispatches between different model architectures.
+#[derive(Debug, Clone)]
+pub enum LoadedArch {
+    GruLm(LoadedModel),
+    BitNet(crate::bitnet::BitNetModel),
+}
+
+impl LoadedArch {
+    pub fn model_id(&self) -> &str {
+        match self {
+            Self::GruLm(m) => &m.manifest.model_id,
+            Self::BitNet(m) => &m.config.model_id,
+        }
+    }
+
+    pub fn arch_name(&self) -> &str {
+        match self {
+            Self::GruLm(_) => "tiny-gru-lm",
+            Self::BitNet(_) => "bitnet-1.58b",
+        }
+    }
+
+    pub fn vocab_size(&self) -> usize {
+        match self {
+            Self::GruLm(m) => m.manifest.vocab_size,
+            Self::BitNet(m) => m.config.vocab_size,
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct ModelRuntime {
-    loaded: RwLock<Option<LoadedModel>>,
+    loaded: RwLock<Option<LoadedArch>>,
 }
 
 impl ModelRuntime {
@@ -77,6 +107,10 @@ impl ModelRuntime {
                 format!("failed to read manifest at {}", manifest_path.display())
             })?,
         )?;
+
+        if manifest.arch == "bitnet-1.58b" {
+            return self.load_bitnet(dir, &manifest);
+        }
 
         if manifest.arch != "tiny-gru-lm" {
             bail!("unsupported model arch `{}`", manifest.arch);
@@ -181,7 +215,7 @@ impl ModelRuntime {
         };
 
         let mut guard = self.loaded.write().expect("model runtime lock poisoned");
-        *guard = Some(loaded);
+        *guard = Some(LoadedArch::GruLm(loaded));
         Ok(ModelLoadResponse {
             model_id: manifest.model_id,
             loaded: true,
@@ -190,14 +224,27 @@ impl ModelRuntime {
         })
     }
 
+    /// Load a BitNet 1.58-bit ternary model.
+    fn load_bitnet(&self, dir: &Path, manifest: &ModelManifest) -> Result<ModelLoadResponse> {
+        let bitnet_model = crate::bitnet::BitNetModel::load(dir)?;
+        let mut guard = self.loaded.write().expect("model runtime lock poisoned");
+        *guard = Some(LoadedArch::BitNet(bitnet_model));
+        Ok(ModelLoadResponse {
+            model_id: manifest.model_id.clone(),
+            loaded: true,
+            checksum_ok: true,
+            arch: manifest.arch.clone(),
+        })
+    }
+
     pub fn status(&self) -> ModelStatusResponse {
         let guard = self.loaded.read().expect("model runtime lock poisoned");
-        if let Some(model) = guard.as_ref() {
+        if let Some(arch) = guard.as_ref() {
             ModelStatusResponse {
                 loaded: true,
-                model_id: Some(model.manifest.model_id.clone()),
-                arch: Some(model.manifest.arch.clone()),
-                vocab_size: Some(model.manifest.vocab_size),
+                model_id: Some(arch.model_id().to_string()),
+                arch: Some(arch.arch_name().to_string()),
+                vocab_size: Some(arch.vocab_size()),
             }
         } else {
             ModelStatusResponse {
@@ -211,9 +258,16 @@ impl ModelRuntime {
 
     pub fn infer(&self, prompt: &str, max_new_tokens: usize) -> Result<ModelInferResponse> {
         let guard = self.loaded.read().expect("model runtime lock poisoned");
-        let Some(model) = guard.as_ref() else {
+        let Some(arch) = guard.as_ref() else {
             bail!("model is not loaded");
         };
+        match arch {
+            LoadedArch::GruLm(model) => self.infer_gru(model, prompt, max_new_tokens),
+            LoadedArch::BitNet(model) => self.infer_bitnet(model, prompt, max_new_tokens),
+        }
+    }
+
+    fn infer_gru(&self, model: &LoadedModel, prompt: &str, max_new_tokens: usize) -> Result<ModelInferResponse> {
         let started = Instant::now();
         let max_tokens = max_new_tokens.clamp(1, 256);
 
@@ -248,10 +302,89 @@ impl ModelRuntime {
             latency_ms: started.elapsed().as_millis() as u64,
         })
     }
+
+    fn infer_bitnet(
+        &self,
+        model: &crate::bitnet::BitNetModel,
+        prompt: &str,
+        max_new_tokens: usize,
+    ) -> Result<ModelInferResponse> {
+        let started = Instant::now();
+        let max_tokens = max_new_tokens.clamp(1, 256);
+
+        let input_ids = model.encode_prompt(prompt);
+        let mut logits = vec![0.0_f32; model.config.vocab_size];
+        for &token_id in &input_ids {
+            logits = model.forward_token(token_id)?;
+        }
+
+        let mut generated_ids: Vec<usize> = Vec::new();
+        let excluded = [
+            model.config.bos_id,
+            model.config.pad_id,
+            model.config.eos_id,
+        ];
+        let mut next_id = argmax_with_exclusions(&logits, &excluded);
+        for _ in 0..max_tokens {
+            if next_id == model.config.eos_id {
+                break;
+            }
+            generated_ids.push(next_id);
+            logits = model.forward_token(next_id)?;
+            next_id = argmax_with_exclusions(&logits, &excluded);
+        }
+
+        let text = model.decode(&generated_ids);
+        Ok(ModelInferResponse {
+            model_id: model.config.model_id.clone(),
+            text,
+            tokens_generated: generated_ids.len(),
+            latency_ms: started.elapsed().as_millis() as u64,
+        })
+    }
+
+    pub fn infer_mcts(
+        &self,
+        prompt: &str,
+        mcts_engine: &crate::mcts::MctsEngine,
+        verifier: &crate::verifier::Verifier,
+        world_model: &crate::world_model::WorldModel,
+    ) -> Result<crate::models::MctsInferResponse> {
+        let guard = self.loaded.read().expect("model runtime lock poisoned");
+        let Some(arch) = guard.as_ref() else {
+            bail!("model is not loaded");
+        };
+
+        // MCTS currently only supports GRU-LM (requires hidden state cloning).
+        let model = match arch {
+            LoadedArch::GruLm(m) => m,
+            LoadedArch::BitNet(_) => bail!("MCTS is not yet supported for BitNet models"),
+        };
+
+        // Encode prompt through the model to get initial hidden state + logits.
+        let mut hidden = vec![vec![0.0_f32; model.manifest.hidden_dim]; model.manifest.num_layers];
+        let input_ids = model.encode_prompt(prompt);
+        let mut logits = vec![0.0_f32; model.manifest.vocab_size];
+        for token_id in input_ids {
+            logits = model.forward_one_token(token_id, &mut hidden)?;
+        }
+
+        // Run MCTS search.
+        let result = mcts_engine.search(model, &hidden, &logits, verifier, world_model)?;
+
+        Ok(crate::models::MctsInferResponse {
+            model_id: model.manifest.model_id.clone(),
+            text: result.text,
+            tokens_generated: result.token_ids.len(),
+            branches_explored: result.branches_explored,
+            best_branch_reward: result.best_reward,
+            latency_ms: result.latency_ms,
+        })
+    }
 }
 
 impl LoadedModel {
-    fn encode_prompt(&self, prompt: &str) -> Vec<usize> {
+    pub fn encode_prompt(&self, prompt: &str) -> Vec<usize> {
         let mut ids = Vec::with_capacity(prompt.chars().count() + 1);
         ids.push(self.manifest.bos_id);
         for ch in prompt.chars() {
@@ -266,7 +399,7 @@ impl LoadedModel {
         ids
     }
 
-    fn decode(&self, ids: &[usize]) -> String {
+    pub fn decode(&self, ids: &[usize]) -> String {
         let special_ids: HashSet<usize> = [
             self.manifest.pad_id,
             self.manifest.bos_id,
@@ -287,7 +420,7 @@ impl LoadedModel {
         out
     }
 
-    fn forward_one_token(&self, token_id: usize, hidden: &mut [Vec<f32>]) -> Result<Vec<f32>> {
+    pub fn forward_one_token(&self, token_id: usize, hidden: &mut [Vec<f32>]) -> Result<Vec<f32>> {
         if token_id >= self.manifest.vocab_size {
             bail!("token id out of range");
         }
@@ -306,13 +439,13 @@ impl LoadedModel {
         Ok(self.lm_head(&x))
     }
 
-    fn embedding_row(&self, token_id: usize) -> Vec<f32> {
+    pub fn embedding_row(&self, token_id: usize) -> Vec<f32> {
         let start = token_id * self.manifest.embed_dim;
         let end = start + self.manifest.embed_dim;
         self.embedding[start..end].to_vec()
     }
 
-    fn lm_head(&self, x: &[f32]) -> Vec<f32> {
+    pub fn lm_head(&self, x: &[f32]) -> Vec<f32> {
         let mut logits = vec![0.0_f32; self.manifest.vocab_size];
         for (row, out) in logits.iter_mut().enumerate() {
             let base = row * self.manifest.hidden_dim;
@@ -326,7 +459,7 @@ impl LoadedModel {
     }
 }
 
-fn gru_step(layer: &GruLayerWeights, x: &[f32], h_prev: &[f32], hidden_dim: usize) -> Vec<f32> {
+pub fn gru_step(layer: &GruLayerWeights, x: &[f32], h_prev: &[f32], hidden_dim: usize) -> Vec<f32> {
     let mut h_next = vec![0.0_f32; hidden_dim];
     for i in 0..hidden_dim {
         let r = sigmoid(
@@ -423,7 +556,7 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn argmax(values: &[f32]) -> usize {
+pub fn argmax(values: &[f32]) -> usize {
     let mut best_idx = 0usize;
     let mut best_val = f32::NEG_INFINITY;
     for (idx, value) in values.iter().enumerate() {
@@ -435,7 +568,26 @@ fn argmax(values: &[f32]) -> usize {
     best_idx
 }
 
-fn argmax_with_exclusions(values: &[f32], excluded: &[usize]) -> usize {
+/// Return top-k tokens with their probabilities after softmax with temperature.
+/// Used by MCTS for stochastic branch expansion.
+pub fn softmax_top_k(logits: &[f32], k: usize, temperature: f32) -> Vec<(usize, f32)> {
+    let temp = temperature.max(0.01);
+    let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let mut exps: Vec<(usize, f32)> = logits
+        .iter()
+        .enumerate()
+        .map(|(idx, &v)| (idx, ((v - max_logit) / temp).exp()))
+        .collect();
+    let sum: f32 = exps.iter().map(|(_, e)| e).sum();
+    for (_, p) in exps.iter_mut() {
+        *p /= sum;
+    }
+    exps.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    exps.truncate(k);
+    exps
+}
+
+pub fn argmax_with_exclusions(values: &[f32], excluded: &[usize]) -> usize {
     let excluded: HashSet<usize> = excluded.iter().copied().collect();
     let mut best_idx = 0usize;
     let mut best_val = f32::NEG_INFINITY;
