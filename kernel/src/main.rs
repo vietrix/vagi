@@ -1,13 +1,14 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::process::{Child, Command};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 use vagi_kernel::KernelContext;
 use vagi_kernel::routes::build_router;
-use vagi_kernel::web_ui::build_web_ui_router;
 
 #[derive(Debug, Default)]
 struct CliArgs {
@@ -16,7 +17,8 @@ struct CliArgs {
 
 fn print_usage() {
     println!("Usage: vagi-kernel [--web-ui]");
-    println!("  --web-ui   Start an additional OpenWebUI-like frontend at http://127.0.0.1:17071");
+    println!("  --web-ui   Start official Open WebUI server at http://127.0.0.1:17071");
+    println!("             Requires `open-webui` command installed from upstream project.");
 }
 
 fn parse_args() -> Result<CliArgs> {
@@ -32,6 +34,74 @@ fn parse_args() -> Result<CliArgs> {
         }
     }
     Ok(args)
+}
+
+fn spawn_open_webui(host: &str, port: u16) -> Result<Child> {
+    let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
+    if let Ok(cmd) = std::env::var("VAGI_OPEN_WEBUI_CMD") {
+        if !cmd.trim().is_empty() {
+            candidates.push((cmd, Vec::new()));
+        }
+    }
+    candidates.push(("open-webui".to_string(), Vec::new()));
+    candidates.push((
+        "python".to_string(),
+        vec!["-m".to_string(), "open_webui".to_string()],
+    ));
+    candidates.push((
+        "python3".to_string(),
+        vec!["-m".to_string(), "open_webui".to_string()],
+    ));
+
+    let mut errors = Vec::new();
+
+    for (program, prefix_args) in candidates {
+        let mut command = Command::new(&program);
+        for arg in &prefix_args {
+            command.arg(arg);
+        }
+        command
+            .arg("serve")
+            .arg("--host")
+            .arg(host)
+            .arg("--port")
+            .arg(port.to_string());
+
+        if let Ok(openai_base_url) = std::env::var("VAGI_OPEN_WEBUI_OPENAI_BASE_URL") {
+            command.env("OPENAI_API_BASE_URL", openai_base_url);
+        }
+        if let Ok(openai_api_key) = std::env::var("VAGI_OPEN_WEBUI_OPENAI_API_KEY") {
+            command.env("OPENAI_API_KEY", openai_api_key);
+        }
+
+        match command.spawn() {
+            Ok(mut child) => {
+                std::thread::sleep(Duration::from_millis(700));
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        errors.push(format!(
+                            "{program}: exited immediately with status {status}"
+                        ));
+                    }
+                    Ok(None) => return Ok(child),
+                    Err(err) => errors.push(format!("{program}: failed to inspect status: {err}")),
+                }
+            }
+            Err(err) => errors.push(format!("{program}: {err}")),
+        }
+    }
+
+    bail!(
+        "failed to spawn Open WebUI upstream process.\n\
+         Tried commands:\n{}\n\
+         Install from upstream repo: https://github.com/open-webui/open-webui",
+        errors.join("\n")
+    )
+}
+
+fn stop_child_process(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[tokio::main]
@@ -69,29 +139,30 @@ async fn main() -> Result<()> {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(17071);
-        let web_ui_addr: SocketAddr = format!("{web_ui_host}:{web_ui_port}").parse()?;
-        let web_ui_listener = TcpListener::bind(web_ui_addr)
-            .await
-            .with_context(|| format!("failed to bind Web UI on {web_ui_addr}"))?;
+        let mut open_webui_child = spawn_open_webui(&web_ui_host, web_ui_port)?;
+        tracing::info!(
+            "Open WebUI (official upstream) started at http://{}:{}",
+            web_ui_host,
+            web_ui_port
+        );
 
-        let web_ui_router = build_web_ui_router(Arc::clone(&ctx), PathBuf::from("runtime/web-ui"))
-            .context("failed to build Web UI router")?;
+        let api_server = axum::serve(api_listener, api_router);
+        tracing::info!("vAGI kernel API listening at http://{api_addr}");
 
-        let api_server = async move {
-            tracing::info!("vAGI kernel API listening at http://{api_addr}");
-            axum::serve(api_listener, api_router)
-                .await
-                .context("kernel API server terminated unexpectedly")
-        };
-
-        let ui_server = async move {
-            tracing::info!("vAGI Web UI listening at http://{web_ui_addr}");
-            axum::serve(web_ui_listener, web_ui_router)
-                .await
-                .context("Web UI server terminated unexpectedly")
-        };
-
-        tokio::try_join!(api_server, ui_server)?;
+        tokio::select! {
+            api_result = api_server => {
+                stop_child_process(&mut open_webui_child);
+                api_result.context("kernel API server terminated unexpectedly")?;
+            }
+            signal_result = tokio::signal::ctrl_c() => {
+                if let Err(err) = signal_result {
+                    tracing::warn!("failed to listen for ctrl-c: {err}");
+                } else {
+                    tracing::info!("ctrl-c received, shutting down");
+                }
+                stop_child_process(&mut open_webui_child);
+            }
+        }
     } else {
         tracing::info!("vAGI kernel API listening at http://{api_addr}");
         axum::serve(api_listener, api_router)

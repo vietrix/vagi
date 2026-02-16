@@ -13,7 +13,6 @@ pub mod routes;
 pub mod snapshot;
 pub mod state_space;
 pub mod verifier;
-pub mod web_ui;
 pub mod world_model;
 
 use std::path::Path;
