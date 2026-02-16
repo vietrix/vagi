@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -14,7 +15,8 @@ use crate::models::{MctsInferResponse, ModelInferResponse, ModelLoadResponse, Mo
 pub const VOCAB_CHARS: &str = "\n !$&',-.3:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 const DEFAULT_MODEL_PATH: &str = "models/lkan-genesis.safetensors";
-const MODEL_ID: &str = "lkan-genesis";
+const DEFAULT_MODEL_FILENAME: &str = "lkan-genesis.safetensors";
+const DEFAULT_MODEL_ID: &str = "lkan-genesis";
 const MODEL_ARCH: &str = "lkan-gpt";
 const MODEL_VERSION: &str = "v1";
 const MAX_CONTEXT_LEN: usize = 64;
@@ -43,7 +45,7 @@ pub struct ModelManifest {
 impl ModelManifest {
     fn lkan_defaults(vocab_size: usize) -> Self {
         Self {
-            model_id: MODEL_ID.to_string(),
+            model_id: DEFAULT_MODEL_ID.to_string(),
             arch: MODEL_ARCH.to_string(),
             version: MODEL_VERSION.to_string(),
             vocab_size,
@@ -61,6 +63,12 @@ impl ModelManifest {
             vocab_sha256: String::new(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct AvailableModel {
+    pub model_id: String,
+    pub checkpoint_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -149,8 +157,16 @@ pub struct LoadedModel {
 
 impl LoadedModel {
     fn from_runtime(runtime: &ModelRuntime) -> Self {
+        let mut manifest = ModelManifest::lkan_defaults(runtime.tokenizer.vocab_size());
+        if let Some(model_id) = runtime.current_model_id() {
+            manifest.model_id = model_id;
+        }
+        if let Some(checkpoint_path) = runtime.current_checkpoint_path() {
+            manifest.model_file = checkpoint_path.to_string_lossy().to_string();
+        }
+
         Self {
-            manifest: ModelManifest::lkan_defaults(runtime.tokenizer.vocab_size()),
+            manifest,
             tokenizer: runtime.tokenizer.clone(),
             model: Arc::clone(&runtime.model),
             device: runtime.device.clone(),
@@ -204,6 +220,8 @@ pub struct ModelRuntime {
     pub model: Arc<Mutex<Option<LKanGPT>>>,
     pub device: Device,
     pub tokenizer: SimpleTokenizer,
+    loaded_model_id: Arc<Mutex<Option<String>>>,
+    loaded_checkpoint_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl Default for ModelRuntime {
@@ -218,6 +236,8 @@ impl ModelRuntime {
             model: Arc::new(Mutex::new(None)),
             device: Device::Cpu,
             tokenizer: SimpleTokenizer::new(),
+            loaded_model_id: Arc::new(Mutex::new(None)),
+            loaded_checkpoint_path: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -247,23 +267,206 @@ impl ModelRuntime {
         })
     }
 
-    fn resolve_checkpoint_path(&self, model_dir: &str) -> PathBuf {
-        let trimmed = model_dir.trim();
+    fn current_model_id(&self) -> Option<String> {
+        self.loaded_model_id
+            .lock()
+            .expect("model runtime id lock poisoned")
+            .clone()
+    }
+
+    fn current_checkpoint_path(&self) -> Option<PathBuf> {
+        self.loaded_checkpoint_path
+            .lock()
+            .expect("model runtime path lock poisoned")
+            .clone()
+    }
+
+    fn model_roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        let mut seen = HashSet::new();
+        let mut push_unique = |path: PathBuf| {
+            let key = path.to_string_lossy().to_string();
+            if seen.insert(key) {
+                roots.push(path);
+            }
+        };
+
+        if let Ok(model_dir) = std::env::var("VAGI_MODEL_DIR") {
+            let trimmed = model_dir.trim();
+            if !trimmed.is_empty() {
+                push_unique(PathBuf::from(trimmed));
+            }
+        }
+
+        push_unique(PathBuf::from("models"));
+        push_unique(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("models"));
+        roots
+    }
+
+    fn discover_checkpoints(&self) -> Vec<AvailableModel> {
+        let mut by_id: BTreeMap<String, PathBuf> = BTreeMap::new();
+        for root in self.model_roots() {
+            if !root.is_dir() {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&root) else {
+                continue;
+            };
+
+            let mut candidates = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if !ext.eq_ignore_ascii_case("safetensors") {
+                    continue;
+                }
+                if path.is_file() {
+                    candidates.push(path);
+                }
+            }
+            candidates.sort();
+
+            for path in candidates {
+                let model_id = model_id_from_path(&path);
+                by_id.entry(model_id).or_insert(path);
+            }
+        }
+
+        by_id
+            .into_iter()
+            .map(|(model_id, checkpoint_path)| AvailableModel {
+                model_id,
+                checkpoint_path,
+            })
+            .collect()
+    }
+
+    pub fn list_available_models(&self) -> Vec<AvailableModel> {
+        let mut by_id: BTreeMap<String, PathBuf> = BTreeMap::new();
+        for model in self.discover_checkpoints() {
+            by_id.entry(model.model_id).or_insert(model.checkpoint_path);
+        }
+        if let (Some(model_id), Some(checkpoint_path)) =
+            (self.current_model_id(), self.current_checkpoint_path())
+        {
+            by_id.entry(model_id).or_insert(checkpoint_path);
+        }
+
+        by_id
+            .into_iter()
+            .map(|(model_id, checkpoint_path)| AvailableModel {
+                model_id,
+                checkpoint_path,
+            })
+            .collect()
+    }
+
+    fn default_checkpoint_path(&self) -> Option<PathBuf> {
+        let models = self.list_available_models();
+        if let Some(preferred) = models.iter().find(|m| m.model_id == DEFAULT_MODEL_ID) {
+            return Some(preferred.checkpoint_path.clone());
+        }
+        models.first().map(|m| m.checkpoint_path.clone())
+    }
+
+    fn find_checkpoint_by_model_id(&self, model_id: &str) -> Option<PathBuf> {
+        let needle = model_id.to_ascii_lowercase();
+        self.list_available_models()
+            .into_iter()
+            .find(|m| m.model_id.to_ascii_lowercase() == needle)
+            .map(|m| m.checkpoint_path)
+    }
+
+    fn available_model_ids_display(&self) -> String {
+        let ids: Vec<String> = self
+            .list_available_models()
+            .into_iter()
+            .map(|m| m.model_id)
+            .collect();
+        if ids.is_empty() {
+            "(none found in models directory)".to_string()
+        } else {
+            ids.join(", ")
+        }
+    }
+
+    fn pick_checkpoint_in_dir(dir: &Path) -> Option<PathBuf> {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return None;
+        };
+        let mut candidates = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if ext.eq_ignore_ascii_case("safetensors") && path.is_file() {
+                candidates.push(path);
+            }
+        }
+        candidates.sort();
+        if let Some(preferred) = candidates.iter().find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.eq_ignore_ascii_case(DEFAULT_MODEL_FILENAME))
+                .unwrap_or(false)
+        }) {
+            return Some(preferred.clone());
+        }
+        candidates.into_iter().next()
+    }
+
+    fn resolve_model_ref(&self, model_ref: &str) -> Result<PathBuf> {
+        let trimmed = model_ref.trim();
         if trimmed.is_empty() {
-            return PathBuf::from(DEFAULT_MODEL_PATH);
+            if let Some(path) = self.default_checkpoint_path() {
+                return Ok(path);
+            }
+            bail!(
+                "no checkpoint found. Put *.safetensors into one of: {}",
+                self.model_roots()
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            );
         }
 
         let candidate = PathBuf::from(trimmed);
         if candidate.is_file() {
-            return candidate;
+            return Ok(candidate);
+        }
+        if candidate.is_dir() {
+            if let Some(path) = Self::pick_checkpoint_in_dir(&candidate) {
+                return Ok(path);
+            }
+            bail!(
+                "directory {} does not contain any .safetensors checkpoint",
+                candidate.display()
+            );
         }
 
-        let nested = candidate.join("lkan-genesis.safetensors");
-        if nested.exists() {
-            return nested;
+        if let Some(path) = self.find_checkpoint_by_model_id(trimmed) {
+            return Ok(path);
         }
 
-        PathBuf::from(DEFAULT_MODEL_PATH)
+        for root in self.model_roots() {
+            let direct = root.join(trimmed);
+            if direct.is_file() {
+                return Ok(direct);
+            }
+            let with_ext = root.join(format!("{trimmed}.safetensors"));
+            if with_ext.is_file() {
+                return Ok(with_ext);
+            }
+        }
+
+        bail!(
+            "unknown model `{trimmed}`. Available models: {}",
+            self.available_model_ids_display()
+        )
     }
 
     fn load_from_checkpoint_path(&self, checkpoint_path: &Path) -> Result<ModelLoadResponse> {
@@ -287,24 +490,101 @@ impl ModelRuntime {
         };
         let model =
             LKanGPT::new(vb.pp("lkan_gpt"), cfg).context("failed to instantiate LKanGPT runtime")?;
+        let model_id = model_id_from_path(checkpoint_path);
 
-        let mut guard = self.model.lock().expect("model runtime lock poisoned");
-        *guard = Some(model);
+        {
+            let mut guard = self.model.lock().expect("model runtime lock poisoned");
+            *guard = Some(model);
+        }
+        {
+            let mut model_id_guard = self
+                .loaded_model_id
+                .lock()
+                .expect("model runtime id lock poisoned");
+            *model_id_guard = Some(model_id.clone());
+        }
+        {
+            let mut checkpoint_guard = self
+                .loaded_checkpoint_path
+                .lock()
+                .expect("model runtime path lock poisoned");
+            *checkpoint_guard = Some(checkpoint_path.to_path_buf());
+        }
 
         Ok(ModelLoadResponse {
-            model_id: MODEL_ID.to_string(),
+            model_id,
             loaded: true,
             checksum_ok: true,
             arch: MODEL_ARCH.to_string(),
         })
     }
 
+    fn ensure_loaded_from_checkpoint(&self, checkpoint_path: &Path) -> Result<String> {
+        let requested =
+            fs::canonicalize(checkpoint_path).unwrap_or_else(|_| checkpoint_path.to_path_buf());
+        let loaded = self.model.lock().expect("model runtime lock poisoned").is_some();
+        if loaded {
+            if let Some(current_path) = self.current_checkpoint_path() {
+                let current = fs::canonicalize(&current_path).unwrap_or(current_path);
+                if current == requested {
+                    return Ok(self
+                        .current_model_id()
+                        .unwrap_or_else(|| model_id_from_path(checkpoint_path)));
+                }
+            }
+        }
+        let response = self.load_from_checkpoint_path(checkpoint_path)?;
+        Ok(response.model_id)
+    }
+
+    pub fn ensure_loaded(&self, model_ref: Option<&str>) -> Result<String> {
+        if let Some(model_ref) = model_ref {
+            let checkpoint_path = self.resolve_model_ref(model_ref)?;
+            return self.ensure_loaded_from_checkpoint(&checkpoint_path);
+        }
+
+        if self.model.lock().expect("model runtime lock poisoned").is_some() {
+            return Ok(self
+                .current_model_id()
+                .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()));
+        }
+
+        let Some(default_path) = self.default_checkpoint_path() else {
+            bail!(
+                "model is not loaded and no checkpoint found in models directory. \
+                 Put *.safetensors into one of: {}",
+                self.model_roots()
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            );
+        };
+        self.ensure_loaded_from_checkpoint(&default_path)
+    }
+
+    pub fn auto_load_from_models_dir(&self) -> Result<Option<ModelLoadResponse>> {
+        if self.model.lock().expect("model runtime lock poisoned").is_some() {
+            return Ok(None);
+        }
+        let Some(default_path) = self.default_checkpoint_path() else {
+            return Ok(None);
+        };
+        Ok(Some(self.load_from_checkpoint_path(&default_path)?))
+    }
+
     pub fn load(&self) -> Result<ModelLoadResponse> {
-        self.load_from_checkpoint_path(Path::new(DEFAULT_MODEL_PATH))
+        let Some(default_path) = self.default_checkpoint_path() else {
+            bail!(
+                "missing checkpoint at {}. Train first using `cargo run -p vagi-kernel --bin train_lkan --release`.",
+                DEFAULT_MODEL_PATH
+            );
+        };
+        self.load_from_checkpoint_path(&default_path)
     }
 
     pub fn load_from_dir(&self, model_dir: &str) -> Result<ModelLoadResponse> {
-        let checkpoint_path = self.resolve_checkpoint_path(model_dir);
+        let checkpoint_path = self.resolve_model_ref(model_dir)?;
         self.load_from_checkpoint_path(&checkpoint_path)
     }
 
@@ -313,7 +593,7 @@ impl ModelRuntime {
         if loaded {
             ModelStatusResponse {
                 loaded: true,
-                model_id: Some(MODEL_ID.to_string()),
+                model_id: self.current_model_id(),
                 arch: Some(MODEL_ARCH.to_string()),
                 vocab_size: Some(self.tokenizer.vocab_size()),
             }
@@ -374,7 +654,9 @@ impl ModelRuntime {
         }
 
         Ok(ModelInferResponse {
-            model_id: MODEL_ID.to_string(),
+            model_id: self
+                .current_model_id()
+                .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
             text: self.tokenizer.decode_ids(&generated_ids),
             tokens_generated: generated_ids.len(),
             latency_ms: started.elapsed().as_millis() as u64,
@@ -405,6 +687,13 @@ impl ModelRuntime {
     pub fn as_loaded_model(&self) -> LoadedModel {
         LoadedModel::from_runtime(self)
     }
+}
+
+fn model_id_from_path(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.to_string())
+        .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string())
 }
 
 fn last_chars(text: &str, max_chars: usize) -> String {
@@ -471,7 +760,9 @@ pub fn argmax_with_exclusions(values: &[f32], excluded: &[usize]) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{SimpleTokenizer, argmax_with_exclusions, last_chars};
+    use std::path::Path;
+
+    use super::{SimpleTokenizer, argmax_with_exclusions, last_chars, model_id_from_path};
 
     #[test]
     fn tokenizer_matches_expected_vocab_size() {
@@ -490,5 +781,11 @@ mod tests {
         let values = [0.1_f32, 0.2, 0.3];
         let idx = argmax_with_exclusions(&values, &[0, 1, 2]);
         assert_eq!(idx, 2);
+    }
+
+    #[test]
+    fn model_id_derived_from_checkpoint_stem() {
+        let path = Path::new("models/lkan-gen2.safetensors");
+        assert_eq!(model_id_from_path(path), "lkan-gen2");
     }
 }

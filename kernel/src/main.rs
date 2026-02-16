@@ -136,6 +136,23 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| PathBuf::from("runtime/memory.redb"));
 
     let ctx = Arc::new(KernelContext::new(&snapshot_db, &memory_db)?);
+    match ctx.model_runtime.auto_load_from_models_dir() {
+        Ok(Some(loaded)) => {
+            tracing::info!(
+                "auto-loaded model `{}` ({}) from models directory",
+                loaded.model_id,
+                loaded.arch
+            );
+        }
+        Ok(None) => {
+            tracing::warn!(
+                "no model auto-loaded at startup; use /internal/model/load or provide checkpoint in models/"
+            );
+        }
+        Err(err) => {
+            tracing::warn!("model auto-load failed at startup: {err}");
+        }
+    }
     let api_router = build_router(Arc::clone(&ctx));
 
     let host = std::env::var("VAGI_KERNEL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());

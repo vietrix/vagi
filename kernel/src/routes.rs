@@ -284,19 +284,23 @@ async fn model_infer(
 }
 
 async fn openai_models(State(ctx): State<Arc<KernelContext>>) -> Json<serde_json::Value> {
-    let status = ctx.model_runtime.status();
-    let model_id = status
-        .model_id
-        .unwrap_or_else(|| "lkan-genesis".to_string());
+    let data: Vec<serde_json::Value> = ctx
+        .model_runtime
+        .list_available_models()
+        .into_iter()
+        .map(|model| {
+            serde_json::json!({
+                "id": model.model_id,
+                "object": "model",
+                "created": unix_now(),
+                "owned_by": "vagi-kernel"
+            })
+        })
+        .collect();
 
     Json(serde_json::json!({
         "object": "list",
-        "data": [{
-            "id": model_id,
-            "object": "model",
-            "created": unix_now(),
-            "owned_by": "vagi-kernel"
-        }]
+        "data": data
     }))
 }
 
@@ -307,13 +311,11 @@ async fn openai_chat_completions(
     if request.messages.is_empty() {
         return Err(ApiError::bad_request("messages must not be empty"));
     }
-    if !ctx.model_runtime.status().loaded {
-        return Err(ApiError::bad_request(
-            "model is not loaded; call /internal/model/load first",
-        ));
-    }
 
-    let model_id = request.model.unwrap_or_else(|| "lkan-genesis".to_string());
+    let model_id = ctx
+        .model_runtime
+        .ensure_loaded(request.model.as_deref())
+        .map_err(ApiError::bad_request)?;
     let max_new_tokens = request
         .max_completion_tokens
         .or(request.max_tokens)
