@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vAGI Web UI</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="brand">vAGI / OpenWebUI-like</div>
+          <button id="new-chat-btn" class="btn btn-primary">New Chat</button>
+          <button id="load-model-btn" class="btn btn-secondary">Load Model</button>
+          <div id="model-status" class="status">Model: unknown</div>
+        </div>
+        <div id="chat-list" class="chat-list"></div>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="chat-header">
+          <h1 id="chat-title">New Chat</h1>
+          <label class="stream-toggle">
+            <input id="stream-toggle" type="checkbox" checked />
+            Stream
+          </label>
+        </header>
+
+        <section id="messages" class="messages"></section>
+
+        <form id="composer-form" class="composer">
+          <textarea
+            id="composer-input"
+            placeholder="Send a message..."
+            rows="3"
+            maxlength="5000"
+          ></textarea>
+          <div class="composer-actions">
+            <label class="token-control">
+              Max tokens
+              <input id="max-tokens" type="number" min="1" max="256" value="128" />
+            </label>
+            <button id="send-btn" class="btn btn-primary" type="submit">Send</button>
+          </div>
+        </form>
+      </main>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
