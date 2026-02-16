@@ -36,7 +36,7 @@ fn parse_args() -> Result<CliArgs> {
     Ok(args)
 }
 
-fn spawn_open_webui(host: &str, port: u16) -> Result<Child> {
+fn spawn_open_webui(host: &str, port: u16, kernel_port: u16) -> Result<Child> {
     let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
     if let Ok(cmd) = std::env::var("VAGI_OPEN_WEBUI_CMD") {
         if !cmd.trim().is_empty() {
@@ -55,6 +55,20 @@ fn spawn_open_webui(host: &str, port: u16) -> Result<Child> {
 
     let mut errors = Vec::new();
 
+    let default_openai_base_url = format!("http://127.0.0.1:{kernel_port}/v1");
+    let openai_base_url = std::env::var("VAGI_OPEN_WEBUI_OPENAI_BASE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(default_openai_base_url);
+    let openai_api_key = std::env::var("VAGI_OPEN_WEBUI_OPENAI_API_KEY")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "sk-vagi-local".to_string());
+    let disable_persistent_config =
+        std::env::var("VAGI_OPEN_WEBUI_DISABLE_PERSISTENT_CONFIG")
+            .map(|v| v != "0")
+            .unwrap_or(true);
+
     for (program, prefix_args) in candidates {
         let mut command = Command::new(&program);
         for arg in &prefix_args {
@@ -67,11 +81,13 @@ fn spawn_open_webui(host: &str, port: u16) -> Result<Child> {
             .arg("--port")
             .arg(port.to_string());
 
-        if let Ok(openai_base_url) = std::env::var("VAGI_OPEN_WEBUI_OPENAI_BASE_URL") {
-            command.env("OPENAI_API_BASE_URL", openai_base_url);
-        }
-        if let Ok(openai_api_key) = std::env::var("VAGI_OPEN_WEBUI_OPENAI_API_KEY") {
-            command.env("OPENAI_API_KEY", openai_api_key);
+        command.env("ENABLE_OPENAI_API", "True");
+        command.env("OPENAI_API_BASE_URL", &openai_base_url);
+        command.env("OPENAI_API_BASE_URLS", &openai_base_url);
+        command.env("OPENAI_API_KEY", &openai_api_key);
+        command.env("OPENAI_API_KEYS", &openai_api_key);
+        if disable_persistent_config {
+            command.env("ENABLE_PERSISTENT_CONFIG", "False");
         }
 
         match command.spawn() {
@@ -139,11 +155,15 @@ async fn main() -> Result<()> {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(17071);
-        let mut open_webui_child = spawn_open_webui(&web_ui_host, web_ui_port)?;
+        let mut open_webui_child = spawn_open_webui(&web_ui_host, web_ui_port, port)?;
         tracing::info!(
             "Open WebUI (official upstream) started at http://{}:{}",
             web_ui_host,
             web_ui_port
+        );
+        tracing::info!(
+            "Open WebUI OpenAI provider -> http://127.0.0.1:{}/v1 (override with VAGI_OPEN_WEBUI_OPENAI_BASE_URL)",
+            port
         );
 
         let api_server = axum::serve(api_listener, api_router);
