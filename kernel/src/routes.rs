@@ -1,24 +1,38 @@
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{BoxError, Json, Router};
+use serde::Deserialize;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
+use uuid::Uuid;
 
 use crate::KernelContext;
+use crate::homeostasis::HormoneEvent;
+use crate::knowledge_graph::NodeType;
 use crate::models::{
-    ErrorResponse, HealthResponse, InitStateRequest, MctsInferRequest, MctsInferResponse,
-    MemoryAddRequest, MemoryAddResponse, MemoryAddTextRequest, MemoryEmbedRequest,
-    MemoryEmbedResponse, MemorySearchItem, MemorySearchRequest, MemorySearchResponse,
-    ModelInferRequest, ModelInferResponse, ModelLoadRequest, ModelLoadResponse,
-    ModelStatusResponse, SnapshotRequest, SnapshotResponse, UpdateStateRequest, VerifierRequest,
-    VerifierResponse, WorldSimulateRequest, WorldSimulateResponse,
+    AffectDetectRequest, AffectDetectResponse, AffectModulateResponse, CausalStepDto,
+    ErrorResponse, HealthResponse, HomeostasisStatusResponse, InitStateRequest,
+    KnowledgeAddRequest, KnowledgeAddResponse, KnowledgeQueryRequest, KnowledgeQueryResponse,
+    MctsInferRequest, MctsInferResponse, MemoryAddRequest, MemoryAddResponse, MemoryAddTextRequest,
+    MemoryEmbedRequest, MemoryEmbedResponse, MemorySearchItem, MemorySearchRequest,
+    MemorySearchResponse, ModelInferRequest, ModelInferResponse, ModelLoadRequest,
+    ModelLoadResponse, ModelStatusResponse, SnapshotRequest, SnapshotResponse, UpdateStateRequest,
+    VerifierRequest, VerifierResponse, WorldSimulateRequest, WorldSimulateResponse,
 };
 
 pub fn build_router(ctx: Arc<KernelContext>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/models", get(openai_models))
+        .route("/v1/models", get(openai_models))
+        .route("/chat/completions", post(openai_chat_completions))
+        .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/internal/state/init", post(init_state))
         .route("/internal/state/update", post(update_state))
         .route("/internal/state/{session_id}", get(get_state))
@@ -32,7 +46,15 @@ pub fn build_router(ctx: Arc<KernelContext>) -> Router {
         .route("/internal/model/load", post(load_model))
         .route("/internal/model/status", get(model_status))
         .route("/internal/infer", post(model_infer))
+        .route("/internal/infer/stream", post(model_infer_stream))
         .route("/internal/infer/mcts", post(model_infer_mcts))
+        // ── Cognitive Architecture ──
+        .route("/internal/homeostasis/status", get(homeostasis_status))
+        .route("/internal/homeostasis/event", post(homeostasis_event))
+        .route("/internal/knowledge/add", post(knowledge_add))
+        .route("/internal/knowledge/query", post(knowledge_query))
+        .route("/internal/affect/detect", post(affect_detect))
+        .route("/internal/affect/modulate", post(affect_modulate))
         .with_state(ctx)
 }
 
@@ -133,14 +155,15 @@ async fn memory_add_text(
     let engine = Arc::clone(&ctx.embedding_engine);
     let store = Arc::clone(&ctx.memory_store);
     let embed_text = text.clone();
-    let (vector, id) = tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<f32>, uuid::Uuid)> {
-        let vector = engine.embed(&embed_text)?;
-        let id = store.add(text, vector.clone())?;
-        Ok((vector, id))
-    })
-    .await
-    .map_err(|err| ApiError::internal(format!("task failed: {err}")))?
-    .map_err(ApiError::bad_request)?;
+    let (vector, id) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<f32>, uuid::Uuid)> {
+            let vector = engine.embed(&embed_text)?;
+            let id = store.add(text, vector.clone())?;
+            Ok((vector, id))
+        })
+        .await
+        .map_err(|err| ApiError::internal(format!("task failed: {err}")))?
+        .map_err(ApiError::bad_request)?;
     let _ = vector;
     Ok(Json(MemoryAddResponse { id }))
 }
@@ -200,11 +223,239 @@ async fn model_infer(
     State(ctx): State<Arc<KernelContext>>,
     Json(request): Json<ModelInferRequest>,
 ) -> Result<Json<ModelInferResponse>, ApiError> {
-    let response = ctx
-        .model_runtime
-        .infer(&request.prompt, request.max_new_tokens.unwrap_or(64))
+    let use_reasoning = request.use_reasoning.unwrap_or(false);
+
+    if use_reasoning {
+        // ── System 2: Deep Thought via TreeSearchAgent ────────────────
+        let runtime = Arc::clone(&ctx.model_runtime);
+        let verifier = Arc::clone(&ctx.verifier);
+        let world = Arc::clone(&ctx.world_model);
+        let prompt = request.prompt;
+        let iterations = request.thinking_iterations.unwrap_or(50).clamp(5, 200);
+        let max_tokens = request.max_new_tokens.unwrap_or(128).clamp(1, 256);
+
+        let response = tokio::task::spawn_blocking(move || {
+            use crate::reasoning::{ThinkConfig, TreeSearchAgent};
+
+            let config = ThinkConfig {
+                iterations,
+                max_tokens_per_draft: max_tokens,
+                ..ThinkConfig::default()
+            };
+            let mut agent = TreeSearchAgent::new(&prompt, config);
+            let result = agent.think(&runtime, &verifier, &world)?;
+
+            // Get model_id for response.
+            let model_id = runtime
+                .status()
+                .model_id
+                .unwrap_or_else(|| "unknown".into());
+
+            Ok::<_, anyhow::Error>(ModelInferResponse {
+                model_id,
+                text: result.best_draft,
+                tokens_generated: 0, // N/A for draft-level reasoning
+                latency_ms: result.latency_ms,
+                think_trace: Some(crate::models::ThinkTrace {
+                    nodes_explored: result.nodes_explored,
+                    best_score: result.best_score,
+                    branches_pruned: result.branches_pruned,
+                    think_latency_ms: result.latency_ms,
+                    verifier_pass: result.verifier_pass,
+                    iterations_completed: result.iterations_completed,
+                    best_depth: result.best_depth,
+                    process_log: result.process_log,
+                }),
+            })
+        })
+        .await
+        .map_err(|err| ApiError::internal(format!("think task failed: {err}")))?
         .map_err(ApiError::bad_request)?;
-    Ok(Json(response))
+
+        Ok(Json(response))
+    } else {
+        // ── System 1: Fast reflex (greedy decode) ────────────────────
+        let response = ctx
+            .model_runtime
+            .infer(&request.prompt, request.max_new_tokens.unwrap_or(64))
+            .map_err(ApiError::bad_request)?;
+        Ok(Json(response))
+    }
+}
+
+async fn openai_models(State(ctx): State<Arc<KernelContext>>) -> Json<serde_json::Value> {
+    let status = ctx.model_runtime.status();
+    let model_id = status
+        .model_id
+        .unwrap_or_else(|| "lkan-genesis".to_string());
+
+    Json(serde_json::json!({
+        "object": "list",
+        "data": [{
+            "id": model_id,
+            "object": "model",
+            "created": unix_now(),
+            "owned_by": "vagi-kernel"
+        }]
+    }))
+}
+
+async fn openai_chat_completions(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<OpenAiChatRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if request.messages.is_empty() {
+        return Err(ApiError::bad_request("messages must not be empty"));
+    }
+    if !ctx.model_runtime.status().loaded {
+        return Err(ApiError::bad_request(
+            "model is not loaded; call /internal/model/load first",
+        ));
+    }
+
+    let model_id = request.model.unwrap_or_else(|| "lkan-genesis".to_string());
+    let max_new_tokens = request
+        .max_completion_tokens
+        .or(request.max_tokens)
+        .unwrap_or(128)
+        .clamp(1, 256);
+    let prompt = openai_messages_to_prompt(&request.messages);
+    let created = unix_now();
+    let completion_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
+
+    if request.stream.unwrap_or(false) {
+        let (tx, rx) = tokio::sync::mpsc::channel(128);
+        let runtime = Arc::clone(&ctx.model_runtime);
+        let model_id = model_id.clone();
+        let completion_id = completion_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let role_chunk = serde_json::json!({
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_id,
+                "choices": [{
+                    "index": 0,
+                    "delta": { "role": "assistant" },
+                    "finish_reason": serde_json::Value::Null
+                }]
+            });
+            let _ = tx.blocking_send(Ok(role_chunk.to_string()));
+
+            let mut running_prompt = prompt;
+            for _ in 0..max_new_tokens {
+                match runtime.infer_next_char(&running_prompt) {
+                    Ok(token) => {
+                        running_prompt.push_str(&token);
+                        let chunk = serde_json::json!({
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_id,
+                            "choices": [{
+                                "index": 0,
+                                "delta": { "content": token },
+                                "finish_reason": serde_json::Value::Null
+                            }]
+                        });
+                        if tx.blocking_send(Ok(chunk.to_string())).is_err() {
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        let _ = tx.blocking_send(Err(format!("stream error: {err}")));
+                        return;
+                    }
+                }
+            }
+
+            let final_chunk = serde_json::json!({
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_id,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop"
+                }]
+            });
+            let _ = tx.blocking_send(Ok(final_chunk.to_string()));
+            let _ = tx.blocking_send(Ok("[DONE]".to_string()));
+        });
+
+        let stream = ReceiverStream::new(rx).map(|event| match event {
+            Ok(data) => Ok::<_, BoxError>(Event::default().data(data)),
+            Err(err) => Ok::<_, BoxError>(Event::default().event("error").data(err)),
+        });
+        return Ok(Sse::new(stream).keep_alive(KeepAlive::default()).into_response());
+    }
+
+    let infer = ctx
+        .model_runtime
+        .infer(&prompt, max_new_tokens)
+        .map_err(ApiError::bad_request)?;
+    let completion_tokens = infer.tokens_generated;
+    let prompt_tokens = prompt.chars().count().max(1);
+    let text = infer.text;
+
+    Ok(Json(serde_json::json!({
+        "id": completion_id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model_id,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": text
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens
+        }
+    }))
+    .into_response())
+}
+
+async fn model_infer_stream(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<ModelInferRequest>,
+) -> impl IntoResponse {
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+
+    let runtime = Arc::clone(&ctx.model_runtime);
+    let verifier = Arc::clone(&ctx.verifier);
+    let world = Arc::clone(&ctx.world_model);
+    let prompt = request.prompt;
+    let iterations = request.thinking_iterations.unwrap_or(50).clamp(5, 200);
+    let max_tokens = request.max_new_tokens.unwrap_or(128).clamp(1, 256);
+
+    tokio::task::spawn_blocking(move || {
+        use crate::reasoning::{ThinkConfig, TreeSearchAgent};
+
+        let config = ThinkConfig {
+            iterations,
+            max_tokens_per_draft: max_tokens,
+            ..ThinkConfig::default()
+        };
+        let mut agent = TreeSearchAgent::new(&prompt, config);
+        // We ignore the actual result as events are streamed.
+        // Log errors if necessary but don't panic.
+        if let Err(e) = agent.think_stream(&runtime, &verifier, &world, tx) {
+            eprintln!("Streaming think failed: {}", e);
+        }
+    });
+
+    let stream = ReceiverStream::new(rx).map(|result| match result {
+        Ok(event) => Ok::<_, BoxError>(Event::default().json_data(event).unwrap()),
+        Err(e) => Ok::<_, BoxError>(Event::default().event("error").data(e.to_string())),
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 async fn model_infer_mcts(
@@ -235,6 +486,153 @@ async fn model_infer_mcts(
     .map_err(ApiError::bad_request)?;
 
     Ok(Json(response))
+}
+
+// ─── Homeostasis ─────────────────────────────────────────────────────────────
+
+async fn homeostasis_status(
+    State(ctx): State<Arc<KernelContext>>,
+) -> Json<HomeostasisStatusResponse> {
+    let snap = ctx.homeostasis.snapshot();
+    Json(HomeostasisStatusResponse {
+        dopamine: snap.dopamine,
+        cortisol: snap.cortisol,
+        oxytocin: snap.oxytocin,
+        energy: snap.energy,
+        mood: format!("{:?}", snap.mood()),
+        mood_description: snap.mood_description().to_string(),
+    })
+}
+
+async fn homeostasis_event(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(event): Json<HormoneEvent>,
+) -> Json<HomeostasisStatusResponse> {
+    ctx.homeostasis.process_event(&event);
+    let snap = ctx.homeostasis.snapshot();
+    Json(HomeostasisStatusResponse {
+        dopamine: snap.dopamine,
+        cortisol: snap.cortisol,
+        oxytocin: snap.oxytocin,
+        energy: snap.energy,
+        mood: format!("{:?}", snap.mood()),
+        mood_description: snap.mood_description().to_string(),
+    })
+}
+
+// ─── Knowledge Graph ─────────────────────────────────────────────────────────
+
+fn parse_node_type(s: &Option<String>) -> NodeType {
+    match s.as_deref() {
+        Some("entity") => NodeType::Entity,
+        Some("event") => NodeType::Event,
+        Some("preference") => NodeType::Preference,
+        Some("behavior") => NodeType::Behavior,
+        _ => NodeType::Concept,
+    }
+}
+
+async fn knowledge_add(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<KnowledgeAddRequest>,
+) -> Json<KnowledgeAddResponse> {
+    let subj_type = parse_node_type(&request.subject_type);
+    let obj_type = parse_node_type(&request.object_type);
+    ctx.knowledge_graph.add_fact(
+        &request.subject,
+        &request.relation,
+        &request.object,
+        subj_type,
+        obj_type,
+    );
+    let (nodes, edges) = ctx.knowledge_graph.stats();
+    Json(KnowledgeAddResponse { nodes, edges })
+}
+
+async fn knowledge_query(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<KnowledgeQueryRequest>,
+) -> Json<KnowledgeQueryResponse> {
+    let max_depth = request.max_depth.unwrap_or(3);
+    let direction = request.direction.as_deref().unwrap_or("effects");
+
+    let chains = match direction {
+        "causes" => ctx.knowledge_graph.query_causes(&request.node, max_depth),
+        "path" => {
+            if let Some(ref target) = request.target {
+                ctx.knowledge_graph
+                    .find_path(&request.node, target)
+                    .map(|p| vec![p])
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            }
+        }
+        _ => ctx.knowledge_graph.query_effects(&request.node, max_depth),
+    };
+
+    let dto_chains: Vec<Vec<CausalStepDto>> = chains
+        .into_iter()
+        .map(|chain| {
+            chain
+                .into_iter()
+                .map(|s| CausalStepDto {
+                    from: s.from,
+                    relation: s.relation,
+                    to: s.to,
+                    strength: s.strength,
+                })
+                .collect()
+        })
+        .collect();
+
+    let pagerank_top = ctx
+        .knowledge_graph
+        .pagerank(20, 0.85)
+        .into_iter()
+        .take(10)
+        .collect();
+
+    Json(KnowledgeQueryResponse {
+        query_node: request.node,
+        chains: dto_chains,
+        pagerank_top,
+    })
+}
+
+// ─── Affect ──────────────────────────────────────────────────────────────────
+
+async fn affect_detect(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<AffectDetectRequest>,
+) -> Json<AffectDetectResponse> {
+    let em = ctx.affect_engine.detect_emotion(&request.text);
+    Json(AffectDetectResponse {
+        valence: em.valence,
+        arousal: em.arousal,
+        dominance: em.dominance,
+        trust: em.trust,
+        label: em.label().to_string(),
+    })
+}
+
+async fn affect_modulate(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<AffectDetectRequest>,
+) -> Json<AffectModulateResponse> {
+    let user_emotion = ctx.affect_engine.detect_emotion(&request.text);
+    let (target, modulation) = ctx.affect_engine.plan_response_tone(&user_emotion);
+    Json(AffectModulateResponse {
+        target_valence: target.valence,
+        target_arousal: target.arousal,
+        target_dominance: target.dominance,
+        target_trust: target.trust,
+        warmth: modulation.warmth,
+        formality: modulation.formality,
+        encouragement: modulation.encouragement,
+        humor: modulation.humor,
+        suggested_framing: modulation.suggested_framing,
+    })
 }
 
 #[derive(Debug)]
@@ -272,5 +670,122 @@ impl IntoResponse for ApiError {
             error: self.message,
         });
         (self.status, payload).into_response()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChatRequest {
+    #[allow(dead_code)]
+    model: Option<String>,
+    messages: Vec<OpenAiMessage>,
+    stream: Option<bool>,
+    max_tokens: Option<usize>,
+    max_completion_tokens: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiMessage {
+    role: String,
+    content: OpenAiMessageContent,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OpenAiMessageContent {
+    Text(String),
+    Parts(Vec<OpenAiMessagePart>),
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiMessagePart {
+    #[serde(rename = "type")]
+    part_type: Option<String>,
+    text: Option<String>,
+}
+
+fn openai_messages_to_prompt(messages: &[OpenAiMessage]) -> String {
+    let mut prompt = String::new();
+    for message in messages {
+        let role = match message.role.as_str() {
+            "system" => "System",
+            "assistant" => "Assistant",
+            _ => "User",
+        };
+        prompt.push_str(role);
+        prompt.push_str(": ");
+        prompt.push_str(&openai_message_content_to_text(&message.content));
+        prompt.push('\n');
+    }
+    prompt.push_str("Assistant:");
+    prompt
+}
+
+fn openai_message_content_to_text(content: &OpenAiMessageContent) -> String {
+    match content {
+        OpenAiMessageContent::Text(text) => text.clone(),
+        OpenAiMessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|part| {
+                if part.part_type.as_deref().unwrap_or("text") == "text" {
+                    part.text.clone()
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<String>>()
+            .join("\n"),
+    }
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod openai_tests {
+    use super::{OpenAiMessage, OpenAiMessageContent, OpenAiMessagePart, openai_messages_to_prompt};
+
+    #[test]
+    fn openai_prompt_from_text_messages() {
+        let messages = vec![
+            OpenAiMessage {
+                role: "system".into(),
+                content: OpenAiMessageContent::Text("You are concise".into()),
+            },
+            OpenAiMessage {
+                role: "user".into(),
+                content: OpenAiMessageContent::Text("Hello".into()),
+            },
+        ];
+        let prompt = openai_messages_to_prompt(&messages);
+        assert!(prompt.contains("System: You are concise"));
+        assert!(prompt.contains("User: Hello"));
+        assert!(prompt.ends_with("Assistant:"));
+    }
+
+    #[test]
+    fn openai_prompt_from_parts() {
+        let messages = vec![OpenAiMessage {
+            role: "user".into(),
+            content: OpenAiMessageContent::Parts(vec![
+                OpenAiMessagePart {
+                    part_type: Some("text".into()),
+                    text: Some("a".into()),
+                },
+                OpenAiMessagePart {
+                    part_type: Some("input_image".into()),
+                    text: Some("ignored".into()),
+                },
+                OpenAiMessagePart {
+                    part_type: Some("text".into()),
+                    text: Some("b".into()),
+                },
+            ]),
+        }];
+        let prompt = openai_messages_to_prompt(&messages);
+        assert!(prompt.contains("User: a\nb"));
     }
 }
