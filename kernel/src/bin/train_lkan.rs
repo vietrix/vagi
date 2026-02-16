@@ -10,11 +10,11 @@ use vagi_kernel::model::gpt_kan::{LKanGPT, LKanGPTConfig};
 use vagi_kernel::model::lkan::LiquidKanConfig;
 
 const INPUT_PATH: &str = "data/input.txt";
-const OUTPUT_PATH: &str = "models/lkan-genesis.safetensors";
+const OUTPUT_PATH: &str = "models/lkan-gen2.safetensors";
 
-const BATCH_SIZE: usize = 32;
-const SEQ_LEN: usize = 64;
-const TRAIN_STEPS: usize = 5_000;
+const BATCH_SIZE: usize = 64;
+const SEQ_LEN: usize = 128;
+const TRAIN_STEPS: usize = 10_000;
 const LOG_EVERY: usize = 200;
 const GENERATE_TOKENS: usize = 50;
 
@@ -181,13 +181,13 @@ fn main() -> Result<()> {
 
     let config = LKanGPTConfig {
         vocab_size,
-        hidden_dim: 128,
+        hidden_dim: 192,
         num_layers: 8,
         num_heads: 4,
         kan_config: LiquidKanConfig {
-            in_dim: 128,
-            hidden_dim: 128,
-            out_dim: 128,
+            in_dim: 192,
+            hidden_dim: 192,
+            out_dim: 192,
             cheb_order: 3,
             dt: 0.1,
             tau_min: 1e-2,
@@ -200,7 +200,7 @@ fn main() -> Result<()> {
     let model =
         LKanGPT::new(vb.pp("lkan_gpt"), config.clone()).context("failed to initialize LKanGPT")?;
 
-    let mut current_lr = 5e-4_f64;
+    let mut current_lr = 6e-4_f64;
     let mut optimizer = AdamW::new(
         var_map.all_vars(),
         ParamsAdamW {
@@ -221,10 +221,10 @@ fn main() -> Result<()> {
 
         optimizer.backward_step(&loss)?;
 
-        if step % 1_000 == 0 {
-            current_lr *= 0.8;
+        if step % 1_500 == 0 {
+            current_lr *= 0.85;
             optimizer.set_learning_rate(current_lr);
-            println!(" Decaying LR to {:.6e}", current_lr);
+            println!("lr decay @ step {} -> {:.6e}", step, current_lr);
         }
 
         if step % LOG_EVERY == 0 {
