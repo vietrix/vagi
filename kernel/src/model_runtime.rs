@@ -14,12 +14,12 @@ use crate::models::{MctsInferResponse, ModelInferResponse, ModelLoadResponse, Mo
 
 pub const VOCAB_CHARS: &str = "\n !$&',-.3:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-const DEFAULT_MODEL_PATH: &str = "models/lkan-genesis.safetensors";
-const DEFAULT_MODEL_FILENAME: &str = "lkan-genesis.safetensors";
-const DEFAULT_MODEL_ID: &str = "lkan-genesis";
+const DEFAULT_MODEL_PATH: &str = "models/lkan-gen2.safetensors";
+const DEFAULT_MODEL_FILENAME: &str = "lkan-gen2.safetensors";
+const DEFAULT_MODEL_ID: &str = "lkan-gen2";
 const MODEL_ARCH: &str = "lkan-gpt";
 const MODEL_VERSION: &str = "v1";
-const MAX_CONTEXT_LEN: usize = 64;
+const MAX_CONTEXT_LEN: usize = 128;
 const MAX_NEW_TOKENS: usize = 256;
 
 #[derive(Debug, Clone)]
@@ -49,8 +49,8 @@ impl ModelManifest {
             arch: MODEL_ARCH.to_string(),
             version: MODEL_VERSION.to_string(),
             vocab_size,
-            embed_dim: 128,
-            hidden_dim: 128,
+            embed_dim: 192,
+            hidden_dim: 192,
             num_layers: 8,
             bos_id: vocab_size,
             eos_id: vocab_size + 1,
@@ -252,13 +252,13 @@ impl ModelRuntime {
 
         Ok(LKanGPTConfig {
             vocab_size,
-            hidden_dim: 128,
+            hidden_dim: 192,
             num_layers: 8,
-            num_heads: 4,
+            num_heads: 6,
             kan_config: LiquidKanConfig {
-                in_dim: 128,
-                hidden_dim: 128,
-                out_dim: 128,
+                in_dim: 192,
+                hidden_dim: 192,
+                out_dim: 192,
                 cheb_order: 3,
                 dt: 0.1,
                 tau_min: 1e-2,
