@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::f64::consts::PI;
 use std::fs;
 use std::path::Path;
 
@@ -10,11 +11,11 @@ use vagi_kernel::model::gpt_kan::{LKanGPT, LKanGPTConfig};
 use vagi_kernel::model::lkan::LiquidKanConfig;
 
 const INPUT_PATH: &str = "data/input.txt";
-const OUTPUT_PATH: &str = "models/lkan-gen2.safetensors";
+const OUTPUT_PATH: &str = "models/lkan-gen3.safetensors";
 
 const BATCH_SIZE: usize = 64;
 const SEQ_LEN: usize = 128;
-const TRAIN_STEPS: usize = 10_000;
+const TRAIN_STEPS: usize = 20_000;
 const LOG_EVERY: usize = 200;
 const GENERATE_TOKENS: usize = 50;
 
@@ -181,14 +182,14 @@ fn main() -> Result<()> {
 
     let config = LKanGPTConfig {
         vocab_size,
-        hidden_dim: 192,
+        hidden_dim: 256,
         num_layers: 8,
-        num_heads: 4,
+        num_heads: 8,
         kan_config: LiquidKanConfig {
-            in_dim: 192,
-            hidden_dim: 192,
-            out_dim: 192,
-            cheb_order: 3,
+            in_dim: 256,
+            hidden_dim: 256,
+            out_dim: 256,
+            cheb_order: 5,
             dt: 0.1,
             tau_min: 1e-2,
             x_scale: 1.0,
@@ -200,18 +201,23 @@ fn main() -> Result<()> {
     let model =
         LKanGPT::new(vb.pp("lkan_gpt"), config.clone()).context("failed to initialize LKanGPT")?;
 
-    let mut current_lr = 6e-4_f64;
+    let max_lr = 1e-3_f64;
+    let min_lr = 1e-5_f64;
     let mut optimizer = AdamW::new(
         var_map.all_vars(),
         ParamsAdamW {
-            lr: current_lr,
+            lr: max_lr,
             weight_decay: 1e-2,
             ..Default::default()
         },
     )?;
 
     let mut rng = rand::rng();
-    for step in 1..=TRAIN_STEPS {
+    for step_idx in 0..TRAIN_STEPS {
+        let cosine_term = (PI * step_idx as f64 / TRAIN_STEPS as f64).cos();
+        let current_lr = min_lr + 0.5 * (max_lr - min_lr) * (1.0 + cosine_term);
+        optimizer.set_learning_rate(current_lr);
+
         let (x, y) = sample_batch(&token_ids, BATCH_SIZE, SEQ_LEN, &mut rng, &device)?;
         let logits = model.forward_logits(&x)?;
         let logits = logits.reshape((BATCH_SIZE * SEQ_LEN, vocab_size))?;
@@ -221,14 +227,12 @@ fn main() -> Result<()> {
 
         optimizer.backward_step(&loss)?;
 
-        if step % 1_500 == 0 {
-            current_lr *= 0.85;
-            optimizer.set_learning_rate(current_lr);
-            println!("lr decay @ step {} -> {:.6e}", step, current_lr);
-        }
-
+        let step = step_idx + 1;
         if step % LOG_EVERY == 0 {
-            println!("step {:4} | loss {:.6}", step, loss_value);
+            println!(
+                "step {:5} | loss {:.6} | lr {:.6e}",
+                step, loss_value, current_lr
+            );
         }
     }
 
