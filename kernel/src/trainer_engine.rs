@@ -2,7 +2,6 @@
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -411,7 +410,8 @@ fn detect_l3_cache_bytes() -> Option<usize> {
     }
     #[cfg(target_os = "linux")]
     {
-        let content = fs::read_to_string("/sys/devices/system/cpu/cpu0/cache/index3/size").ok()?;
+        let content =
+            std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cache/index3/size").ok()?;
         let trimmed = content.trim().to_ascii_uppercase();
         if let Some(kb) = trimmed.strip_suffix('K').and_then(|s| s.parse::<usize>().ok()) {
             return Some(kb * 1024);

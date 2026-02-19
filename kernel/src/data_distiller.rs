@@ -43,7 +43,7 @@ impl DataDistiller {
 
     pub fn logic_score(&self, text: &str) -> f32 {
         let lower = text.to_lowercase();
-        let mut score = 0.0;
+        let mut score: f32 = 0.0;
         if self.code_hint.is_match(text) {
             score += 0.45;
         }
