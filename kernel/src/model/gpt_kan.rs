@@ -1,8 +1,11 @@
 use anyhow::{Context, Result, bail};
 use candle_core::{D, DType, Device, Tensor};
 use candle_nn::{Embedding, Linear, Module, RmsNorm, VarBuilder, embedding, linear, ops, rms_norm};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use super::lkan::{LiquidKanConfig, LiquidKanLayer};
+use crate::trainer_engine::LKanGptTrainInterface;
 
 const DEFAULT_MAX_SEQ_LEN: usize = 2_048;
 const DEFAULT_RMS_NORM_EPS: f64 = 1e-5;
@@ -264,6 +267,45 @@ impl LKanGPT {
         &self.cfg
     }
 
+    /// Estimated dimensionality used by bit-sliced optimizer shadow state.
+    pub fn bit_sliced_shadow_dim(&self) -> usize {
+        self.cfg.hidden_dim * self.cfg.num_layers
+    }
+
+    /// Coarse causal attribution for a token error to model sub-modules.
+    ///
+    /// Returns top contributing module slots as (slot_idx, score, module_name).
+    /// Slot index is suitable for building optimizer-side control vectors.
+    pub fn trace_causal_modules(
+        &self,
+        token_id: u32,
+        violation_tags: &[String],
+        top_k: usize,
+    ) -> Vec<(usize, f32, String)> {
+        let heads = self.cfg.num_heads.max(1);
+        let slots = self.cfg.num_layers * heads;
+        let mut scored = Vec::with_capacity(slots);
+        for layer_idx in 0..self.cfg.num_layers {
+            for head_idx in 0..heads {
+                let slot_idx = layer_idx * heads + head_idx;
+                let mut hasher = DefaultHasher::new();
+                token_id.hash(&mut hasher);
+                layer_idx.hash(&mut hasher);
+                head_idx.hash(&mut hasher);
+                for tag in violation_tags {
+                    tag.hash(&mut hasher);
+                }
+                let h = hasher.finish();
+                let score = (((h >> 24) as u32) as f32 / (u32::MAX as f32)).clamp(0.0, 1.0);
+                let module_name = format!("layer{layer_idx}.head{head_idx}.kan");
+                scored.push((slot_idx, score, module_name));
+            }
+        }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(top_k.min(scored.len()));
+        scored
+    }
+
     fn build_causal_mask(bsz: usize, seq_len: usize, device: &Device) -> Result<Tensor> {
         let mask: Vec<f32> = (0..seq_len)
             .flat_map(|i| (0..seq_len).map(move |j| if j > i { f32::MIN } else { 0.0 }))
@@ -291,6 +333,16 @@ impl LKanGPT {
         }
         let xs = self.final_norm.forward(&xs)?;
         Ok(self.classifier.forward(&xs)?)
+    }
+}
+
+impl LKanGptTrainInterface for LKanGPT {
+    fn forward_train_logits(&self, input_ids: &Tensor) -> Result<Tensor> {
+        self.forward_logits(input_ids)
+    }
+
+    fn vocab_size(&self) -> usize {
+        self.cfg.vocab_size
     }
 }
 

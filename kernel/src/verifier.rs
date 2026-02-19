@@ -7,7 +7,7 @@ use wasmtime_wasi::WasiCtxBuilder;
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 
 use crate::hdc::HdcVerifier;
-use crate::models::{VerifierRequest, VerifierResponse};
+use crate::models::{VerifierActRequest, VerifierActResponse, VerifierRequest, VerifierResponse};
 
 const WASI_SMOKE_WAT: &str = r#"
 (module
@@ -69,13 +69,47 @@ impl Verifier {
             violations.push(format!("wasi_runtime_error:{err}"));
         }
 
+        let act_script = format!(
+            "echo verifier_act_probe\nset patch_bytes={}\nappend mode=feedback",
+            request.patch_ir.len()
+        );
+        let act_feedback = self.execute_act(&VerifierActRequest {
+            patch_ir: act_script,
+            max_steps: Some(12),
+            max_output_bytes: Some(4_096),
+        });
+        if !act_feedback.pass {
+            violations.push(format!("wasi_act_exit:{}", act_feedback.exit_code));
+        }
+        let logic_penalty = self.compute_logic_penalty(&violations, &act_feedback);
+
         VerifierResponse {
             pass: violations.is_empty(),
             violations,
             cost: request.patch_ir.len() as u32,
             timeout_hit,
             wasi_ok,
+            logic_penalty,
         }
+    }
+
+    pub fn compute_logic_penalty(
+        &self,
+        violations: &[String],
+        act_feedback: &VerifierActResponse,
+    ) -> f32 {
+        let mut penalty = 0.0_f32;
+        penalty += (violations.len() as f32) * 0.08;
+        if !act_feedback.pass {
+            penalty += 0.25;
+        }
+        if !act_feedback.stderr.trim().is_empty() {
+            penalty += 0.10;
+        }
+        if act_feedback.steps_executed >= 12 {
+            penalty += 0.05;
+        }
+        penalty.min(1.0)
     }
 
     fn static_checks(&self, request: &VerifierRequest) -> Vec<String> {
@@ -123,11 +157,108 @@ impl Verifier {
         let _ = linker.instantiate(&mut store, &self.smoke_module)?;
         Ok(())
     }
+
+    /// Execute a constrained action script in a WASI-inspired sandbox runtime.
+    ///
+    /// Accepted commands per line:
+    /// - `echo <text>`
+    /// - `warn <text>`
+    /// - `set <key>=<value>`
+    /// - `append <key>=<value>`
+    /// - `fail <message>`
+    pub fn execute_act(&self, request: &VerifierActRequest) -> VerifierActResponse {
+        let max_steps = request.max_steps.unwrap_or(16).clamp(1, 128);
+        let max_output_bytes = request.max_output_bytes.unwrap_or(8_192).clamp(256, 65_536);
+
+        let mut stdout_lines: Vec<String> = Vec::new();
+        let mut stderr_lines: Vec<String> = Vec::new();
+        let mut state_changes: Vec<String> = Vec::new();
+        let mut steps_executed = 0_u32;
+        let mut exit_code = 0_i32;
+
+        for raw_line in request.patch_ir.lines() {
+            if steps_executed >= max_steps {
+                stderr_lines.push(format!("step budget exceeded: {max_steps}"));
+                exit_code = 124;
+                break;
+            }
+            let line = raw_line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            steps_executed += 1;
+
+            if let Some(payload) = line.strip_prefix("echo ") {
+                stdout_lines.push(payload.trim().to_string());
+                continue;
+            }
+            if let Some(payload) = line.strip_prefix("warn ") {
+                stderr_lines.push(payload.trim().to_string());
+                continue;
+            }
+            if let Some(payload) = line.strip_prefix("set ") {
+                if let Some((key, value)) = payload.split_once('=') {
+                    state_changes.push(format!(
+                        "set:{}={}",
+                        key.trim(),
+                        value.trim()
+                    ));
+                } else {
+                    stderr_lines.push(format!("invalid set command: {line}"));
+                    exit_code = 2;
+                    break;
+                }
+                continue;
+            }
+            if let Some(payload) = line.strip_prefix("append ") {
+                if let Some((key, value)) = payload.split_once('=') {
+                    state_changes.push(format!(
+                        "append:{}={}",
+                        key.trim(),
+                        value.trim()
+                    ));
+                } else {
+                    stderr_lines.push(format!("invalid append command: {line}"));
+                    exit_code = 2;
+                    break;
+                }
+                continue;
+            }
+            if let Some(payload) = line.strip_prefix("fail ") {
+                stderr_lines.push(payload.trim().to_string());
+                exit_code = 1;
+                break;
+            }
+
+            stderr_lines.push(format!("unsupported command: {line}"));
+            exit_code = 2;
+            break;
+        }
+
+        let mut stdout = stdout_lines.join("\n");
+        let mut stderr = stderr_lines.join("\n");
+        if stdout.len() > max_output_bytes {
+            stdout.truncate(max_output_bytes);
+        }
+        if stderr.len() > max_output_bytes {
+            stderr.truncate(max_output_bytes);
+        }
+
+        VerifierActResponse {
+            pass: exit_code == 0,
+            exit_code,
+            stdout,
+            stderr,
+            state_changes,
+            steps_executed,
+            runtime: "wasi-act-v1".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::models::VerifierRequest;
+    use crate::models::{VerifierActRequest, VerifierRequest};
 
     use super::Verifier;
 
@@ -158,5 +289,19 @@ mod tests {
         });
         assert!(res.wasi_ok);
         assert!(res.pass);
+    }
+
+    #[test]
+    fn executes_wasi_act_script() {
+        let verifier = Verifier::new().expect("create verifier");
+        let res = verifier.execute_act(&VerifierActRequest {
+            patch_ir: "echo started\nset phase=observe\nappend log=done".to_string(),
+            max_steps: Some(8),
+            max_output_bytes: Some(512),
+        });
+        assert!(res.pass);
+        assert_eq!(res.exit_code, 0);
+        assert!(res.stdout.contains("started"));
+        assert!(res.state_changes.iter().any(|e| e.contains("phase")));
     }
 }

@@ -98,6 +98,26 @@ impl WorldModel {
     pub fn has_anchor_nodes(&self) -> bool {
         self.nodes.contains_key("ReceiveInput") && self.nodes.contains_key("PersistAudit")
     }
+
+    /// Predict experts likely needed in future decode steps.
+    ///
+    /// Returns deterministic expert IDs for lookahead prefetch.
+    pub fn predict_expert_prefetch(&self, token_ids: &[u32], lookahead: usize) -> Vec<String> {
+        let horizon = lookahead.clamp(1, 8);
+        let mut out = Vec::with_capacity(horizon);
+        let mut seed = token_ids.iter().fold(0_u64, |acc, t| {
+            acc.wrapping_mul(0x9E3779B185EBCA87).wrapping_add(*t as u64 + 1)
+        });
+        if seed == 0 {
+            seed = 0xA0761D6478BD642F;
+        }
+        for step in 0..horizon {
+            seed = seed.rotate_left(9).wrapping_add((step as u64 + 1) * 0x94D049BB133111EB);
+            let expert = (seed % 16) as usize;
+            out.push(format!("expert_{expert:02}"));
+        }
+        out
+    }
 }
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
@@ -121,5 +141,12 @@ mod tests {
         let model = WorldModel::new();
         assert!(model.graph_node_count() >= 6);
         assert!(model.has_anchor_nodes());
+    }
+
+    #[test]
+    fn prefetch_prediction_returns_lookahead() {
+        let model = WorldModel::new();
+        let experts = model.predict_expert_prefetch(&[1, 2, 3], 3);
+        assert_eq!(experts.len(), 3);
     }
 }

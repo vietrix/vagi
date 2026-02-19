@@ -1,17 +1,23 @@
 pub mod affect;
+pub mod bit_lkan;
 pub mod bitnet;
+pub mod data_distiller;
 pub mod hdc;
 pub mod homeostasis;
 pub mod knowledge_graph;
 pub mod mcts;
 pub mod memory;
+pub mod moe_gate;
 pub mod model;
 pub mod model_runtime;
 pub mod models;
 pub mod reasoning;
 pub mod routes;
 pub mod snapshot;
+pub mod sparse_hdc_basis;
 pub mod state_space;
+pub mod trainer_engine;
+pub mod titanium_kernels;
 pub mod verifier;
 pub mod world_model;
 
@@ -25,6 +31,7 @@ use knowledge_graph::KnowledgeGraph;
 use mcts::MctsEngine;
 use memory::embedding::EmbeddingEngine;
 use memory::vector_store::VectorStore;
+use moe_gate::{MoeGate, discover_expert_profiles};
 use model_runtime::ModelRuntime;
 use snapshot::SnapshotStore;
 use state_space::StateManager;
@@ -45,12 +52,22 @@ pub struct KernelContext {
     pub homeostasis: Arc<HomeostasisEngine>,
     pub knowledge_graph: Arc<KnowledgeGraph>,
     pub affect_engine: Arc<AffectEngine>,
+    pub moe_gate: Arc<MoeGate>,
 }
 
 impl KernelContext {
     pub fn new(snapshot_path: &Path, memory_path: &Path) -> Result<Self> {
         let embedding_engine =
             EmbeddingEngine::new().context("failed to initialise embedding engine")?;
+        let max_loaded_experts = std::env::var("VAGI_MAX_LOADED_EXPERTS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(8);
+        let moe_gate = Arc::new(MoeGate::new(max_loaded_experts));
+        let discovered = discover_expert_profiles(Path::new("runtime/experts")).unwrap_or_default();
+        if !discovered.is_empty() {
+            moe_gate.register_experts(discovered);
+        }
         Ok(Self {
             state_manager: Arc::new(StateManager::new(HIDDEN_SIZE)),
             snapshot_store: Arc::new(SnapshotStore::new(snapshot_path)?),
@@ -63,6 +80,7 @@ impl KernelContext {
             homeostasis: Arc::new(HomeostasisEngine::new()),
             knowledge_graph: Arc::new(KnowledgeGraph::new()),
             affect_engine: Arc::new(AffectEngine::new()),
+            moe_gate,
         })
     }
 }

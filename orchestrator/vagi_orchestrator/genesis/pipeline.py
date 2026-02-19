@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from .data_builder import build_dialogue_intent_samples
 from .model import TinyGruLm
 from .tokenizer import CharTokenizer
+from ..semantic_map import SemanticEpisodeMap
 
 
 @dataclass(slots=True)
@@ -30,6 +31,8 @@ class GenesisConfig:
     lr: float = 3e-3
     seed: int = 42
     max_seq_len: int = 128
+    titanium_mode: bool = False
+    logic_filter_min_score: float = 0.3
 
 
 def train_and_export(output_dir: Path, config: GenesisConfig | None = None) -> dict[str, Any]:
@@ -37,7 +40,7 @@ def train_and_export(output_dir: Path, config: GenesisConfig | None = None) -> d
     _set_seed(config.seed)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    texts = build_dialogue_intent_samples(repeats=config.repeats)
+    texts = _build_training_texts(config=config)
     tokenizer = CharTokenizer.build_from_texts(texts)
     windows = _build_windows(texts=texts, tokenizer=tokenizer, seq_len=config.seq_len)
     train_loader, val_loader = _build_loaders(windows=windows, batch_size=config.batch_size)
@@ -87,9 +90,10 @@ def train_and_export(output_dir: Path, config: GenesisConfig | None = None) -> d
     save_file(best_state, str(model_path))
     tokenizer.save(vocab_path)
 
+    arch = "vagi-titanium-gru" if config.titanium_mode else "tiny-gru-lm"
     manifest = {
         "model_id": "genesis-v0",
-        "arch": "tiny-gru-lm",
+        "arch": arch,
         "version": "0.1.0",
         "vocab_size": len(tokenizer.tokens),
         "embed_dim": config.embed_dim,
@@ -107,6 +111,7 @@ def train_and_export(output_dir: Path, config: GenesisConfig | None = None) -> d
         "metrics": {
             "best_val_loss": best_val_loss,
             "epochs": config.epochs,
+            "titanium_mode": config.titanium_mode,
         },
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -129,7 +134,44 @@ def train_and_export(output_dir: Path, config: GenesisConfig | None = None) -> d
         "smoke_text": smoke_text,
         "best_val_loss": best_val_loss,
         "history": history,
+        "titanium_mode": config.titanium_mode,
     }
+
+
+def _build_training_texts(config: GenesisConfig) -> list[str]:
+    texts = build_dialogue_intent_samples(repeats=config.repeats)
+    if not config.titanium_mode:
+        return texts
+
+    # Titanium mode: bias toward logic-dense samples using a semantic map proxy.
+    semantic = SemanticEpisodeMap(dim=512)
+    for text in texts:
+        semantic.add_episode(user_input=text, draft=text)
+
+    scored: list[tuple[float, str]] = []
+    probes = [
+        "prove correctness with invariants",
+        "implement secure login with verifier checks",
+        "derive equation and validate each step",
+    ]
+    for text in texts:
+        signal = 0.0
+        for probe in probes:
+            hits = semantic.query(f"{probe} {text[:120]}", top_k=1, min_score=-1.0)
+            if hits:
+                signal += float(hits[0].score)
+        lower = text.lower()
+        if any(token in lower for token in ("assert", "because", "therefore", "verify", "proof")):
+            signal += 0.35
+        if any(token in lower for token in ("fn ", "def ", "class ", "{")):
+            signal += 0.45
+        scored.append((signal, text))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    if not scored:
+        return texts
+    keep = max(16, int(len(scored) * max(0.15, min(1.0, config.logic_filter_min_score))))
+    return [text for _, text in scored[:keep]]
 
 
 def greedy_generate(

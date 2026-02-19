@@ -91,12 +91,51 @@ pub struct VerifierResponse {
     pub cost: u32,
     pub timeout_hit: bool,
     pub wasi_ok: bool,
+    pub logic_penalty: f32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VerifierActRequest {
+    pub patch_ir: String,
+    pub max_steps: Option<u32>,
+    pub max_output_bytes: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VerifierActResponse {
+    pub pass: bool,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub state_changes: Vec<String>,
+    pub steps_executed: u32,
+    pub runtime: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
     pub status: &'static str,
     pub hidden_size: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MicroOodaRequest {
+    pub session_id: Option<String>,
+    pub input: String,
+    pub risk_threshold: Option<f32>,
+    pub max_decide_iters: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MicroOodaResponse {
+    pub handled: bool,
+    pub reason: String,
+    pub draft: String,
+    pub risk_score: f32,
+    pub confidence: f32,
+    pub verifier_pass: bool,
+    pub violations: Vec<String>,
+    pub iterations: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -315,4 +354,23 @@ pub struct AffectModulateResponse {
     pub encouragement: f32,
     pub humor: f32,
     pub suggested_framing: String,
+}
+
+// ─── MoE Gate ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct MoeSelectRequest {
+    pub embedding: Vec<f32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MoeSelectionItem {
+    pub expert_id: String,
+    pub score: f32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MoeSelectResponse {
+    pub selected: Vec<MoeSelectionItem>,
+    pub loaded_count: usize,
 }

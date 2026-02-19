@@ -5,9 +5,46 @@ use anyhow::{Result, bail};
 
 use crate::models::HiddenState;
 
+const L2_BLOCK: usize = 128;
+
+#[derive(Debug, Clone)]
+struct SsrRecurrence {
+    // h_t = a*h_{t-1} + b*x_t + c*mean(h_{t-1})
+    a: Vec<f32>,
+    b: Vec<f32>,
+    c: Vec<f32>,
+}
+
+impl SsrRecurrence {
+    fn new(hidden_size: usize) -> Self {
+        let mut a = vec![0.0; hidden_size];
+        let mut b = vec![0.0; hidden_size];
+        let mut c = vec![0.0; hidden_size];
+        for idx in 0..hidden_size {
+            // Keep dynamics stable (<1.0) and deterministic.
+            a[idx] = 0.86 + (idx % 11) as f32 * 0.005;
+            b[idx] = 0.12 + (idx % 7) as f32 * 0.003;
+            c[idx] = 0.01 + (idx % 5) as f32 * 0.001;
+        }
+        Self { a, b, c }
+    }
+
+    fn step(&self, h: &mut [f32], x: &[f32]) {
+        let mean_h = h.iter().copied().sum::<f32>() / h.len().max(1) as f32;
+        for start in (0..h.len()).step_by(L2_BLOCK) {
+            let end = (start + L2_BLOCK).min(h.len());
+            for idx in start..end {
+                let next = self.a[idx] * h[idx] + self.b[idx] * x[idx] + self.c[idx] * mean_h;
+                h[idx] = next.clamp(-1.0, 1.0);
+            }
+        }
+    }
+}
+
 pub struct StateManager {
     hidden_size: usize,
     states: RwLock<HashMap<String, HiddenState>>,
+    recurrence: SsrRecurrence,
 }
 
 impl StateManager {
@@ -15,6 +52,7 @@ impl StateManager {
         Self {
             hidden_size,
             states: RwLock::new(HashMap::new()),
+            recurrence: SsrRecurrence::new(hidden_size),
         }
     }
 
@@ -46,14 +84,9 @@ impl StateManager {
             .entry(session_id.to_string())
             .or_insert_with(|| HiddenState::new(session_id.to_string(), self.hidden_size));
 
-        // Linear stream: process input in fixed chunks, no global re-attention.
         for chunk in input.as_bytes().chunks(256) {
             let encoded = encode_chunk(chunk, self.hidden_size);
-            for (idx, h) in state.vector.iter_mut().enumerate() {
-                let x = encoded[idx];
-                let gate = sigmoid(0.7 * x + 0.3 * *h);
-                *h = gate * *h + (1.0 - gate) * x.tanh();
-            }
+            self.recurrence.step(&mut state.vector, &encoded);
             state.step += 1;
         }
 
@@ -74,14 +107,8 @@ fn encode_chunk(chunk: &[u8], hidden_size: usize) -> Vec<f32> {
         out[idx] += normalized * 0.35;
     }
 
-    // Keep bounded values for numerical stability.
     out.iter_mut().for_each(|v| *v = v.clamp(-1.0, 1.0));
     out
-}
-
-#[inline]
-fn sigmoid(v: f32) -> f32 {
-    1.0 / (1.0 + (-v).exp())
 }
 
 #[cfg(test)]

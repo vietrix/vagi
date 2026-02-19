@@ -137,6 +137,7 @@ def create_app(
             result = await services.reasoner.run_chat(
                 session_id=session_id,
                 messages=messages,
+                runtime_metrics=dict(services.metrics),
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc

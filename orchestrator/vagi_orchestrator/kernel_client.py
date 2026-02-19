@@ -72,6 +72,54 @@ class KernelClient:
         response.raise_for_status()
         return response.json()
 
+    async def verify_act(
+        self,
+        patch_ir: str,
+        max_steps: int = 16,
+        max_output_bytes: int = 8192,
+    ) -> dict[str, Any]:
+        response = await self._client.post(
+            "/internal/verifier/act",
+            json={
+                "patch_ir": patch_ir,
+                "max_steps": max_steps,
+                "max_output_bytes": max_output_bytes,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def micro_ooda_run(
+        self,
+        input_text: str,
+        session_id: str | None = None,
+        risk_threshold: float = 0.45,
+        max_decide_iters: int = 2,
+    ) -> dict[str, Any]:
+        response = await self._client.post(
+            "/internal/ooda/micro_run",
+            json={
+                "session_id": session_id,
+                "input": input_text,
+                "risk_threshold": risk_threshold,
+                "max_decide_iters": max_decide_iters,
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def homeostasis_status(self) -> dict[str, Any]:
+        response = await self._client.get("/internal/homeostasis/status")
+        response.raise_for_status()
+        return response.json()
+
+    async def homeostasis_event(self, event_type: str, **kwargs: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"type": event_type}
+        payload.update(kwargs)
+        response = await self._client.post("/internal/homeostasis/event", json=payload)
+        response.raise_for_status()
+        return response.json()
+
     async def model_load(self, model_dir: str) -> dict[str, Any]:
         response = await self._client.post(
             "/internal/model/load",

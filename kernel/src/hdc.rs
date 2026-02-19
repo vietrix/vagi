@@ -17,7 +17,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 /// Dimension of hypervectors in bits.
-pub const HDC_DIM: usize = 4096;
+pub const HDC_DIM: usize = 8192;
 
 /// Number of u64 words needed for HDC_DIM bits.
 const WORDS: usize = HDC_DIM / 64;
@@ -145,6 +145,85 @@ pub struct HdcVerifier {
     codebook: HashMap<String, HyperVector>,
     /// Prototype violation patterns.
     prototypes: Vec<(String, HyperVector)>,
+}
+
+/// Recursive HDC compressor that maintains a master hypervector over episodes.
+pub struct RecursiveHdcMemory {
+    codebook: HashMap<String, HyperVector>,
+    master: HyperVector,
+    recency: f32,
+}
+
+impl RecursiveHdcMemory {
+    pub fn new(recency: f32) -> Self {
+        Self {
+            codebook: HashMap::new(),
+            master: HyperVector::zeros(),
+            recency: recency.clamp(0.0, 1.0),
+        }
+    }
+
+    pub fn master(&self) -> &HyperVector {
+        &self.master
+    }
+
+    pub fn master_popcount(&self) -> u32 {
+        self.master.popcount()
+    }
+
+    fn get_or_create(&mut self, token: &str) -> HyperVector {
+        if let Some(hv) = self.codebook.get(token) {
+            return hv.clone();
+        }
+        let mut seed = 0xcbf29ce484222325u64;
+        for b in token.bytes() {
+            seed ^= b as u64;
+            seed = seed.wrapping_mul(0x100000001b3);
+        }
+        let hv = HyperVector::random(seed);
+        self.codebook.insert(token.to_string(), hv.clone());
+        hv
+    }
+
+    fn encode_text(&mut self, text: &str) -> HyperVector {
+        let tokens: Vec<String> = text
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|t| !t.is_empty())
+            .map(|s| s.to_lowercase())
+            .collect();
+        if tokens.is_empty() {
+            return HyperVector::zeros();
+        }
+        let mut vecs = Vec::with_capacity(tokens.len());
+        for (idx, tok) in tokens.iter().enumerate() {
+            vecs.push(self.get_or_create(tok).permute(idx % 64));
+        }
+        HyperVector::bundle(&vecs)
+    }
+
+    /// Recursively bundle new episode into master vector.
+    pub fn ingest_episode(&mut self, episode: &str) {
+        let encoded = self.encode_text(episode);
+        let mixed = HyperVector::bundle(&[self.master.clone(), encoded]);
+        if self.recency >= 0.999 {
+            self.master = mixed;
+            return;
+        }
+        // Cheap recency control by blending via repeated bundling of old state.
+        let repeat_old = (self.recency * 4.0).round() as usize;
+        let mut pool = vec![mixed];
+        for _ in 0..repeat_old {
+            pool.push(self.master.clone());
+        }
+        self.master = HyperVector::bundle(&pool);
+    }
+
+    /// Bind cue with master and report relevance score.
+    pub fn bind_query_relevance(&mut self, cue: &str) -> f32 {
+        let cue_vec = self.encode_text(cue);
+        let unlocked = self.master.bind(&cue_vec);
+        unlocked.similarity(&cue_vec)
+    }
 }
 
 impl HdcVerifier {
@@ -335,5 +414,15 @@ mod tests {
             safe_violations.len() <= unsafe_violations.len(),
             "safe code should have fewer violations: safe={safe_violations:?} unsafe={unsafe_violations:?}"
         );
+    }
+
+    #[test]
+    fn recursive_memory_ingests_and_queries() {
+        let mut mem = RecursiveHdcMemory::new(0.85);
+        mem.ingest_episode("compile auth validator token issue");
+        mem.ingest_episode("run logic verifier and causal check");
+        let rel = mem.bind_query_relevance("verifier logic");
+        assert!(rel.is_finite());
+        assert!(mem.master_popcount() > 0);
     }
 }

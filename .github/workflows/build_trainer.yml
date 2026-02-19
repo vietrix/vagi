@@ -20,13 +20,13 @@ jobs:
           - name: linux
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            src_binary: target/x86_64-unknown-linux-gnu/release/train_lkan
+            src_binary: ../target/x86_64-unknown-linux-gnu/release/train_lkan
             out_binary: vagi-trainer-linux
             artifact_name: vagi-trainer-linux
           - name: windows
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            src_binary: target/x86_64-pc-windows-msvc/release/train_lkan.exe
+            src_binary: ../target/x86_64-pc-windows-msvc/release/train_lkan.exe
             out_binary: vagi-trainer-windows.exe
             artifact_name: vagi-trainer-windows.exe
 

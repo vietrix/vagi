@@ -58,3 +58,34 @@ def test_store_migrates_policy_columns_and_updates_decision(tmp_path: Path) -> N
     assert "verifier_required" in cols
     assert "verifier_gate_pass" in cols
 
+
+def test_recent_episodes_returns_latest_first(tmp_path: Path) -> None:
+    store = EpisodeStore(
+        db_path=tmp_path / "episodes.db",
+        long_term_path=tmp_path / "memory.jsonl",
+    )
+    first_id = store.record_episode(
+        session_id="sid-a",
+        user_input="u1",
+        draft="d1",
+        verifier_pass=True,
+        risk_score=0.3,
+        trust_score=0.7,
+        violations=[],
+        source="chat",
+    )
+    second_id = store.record_episode(
+        session_id="sid-b",
+        user_input="u2",
+        draft="d2",
+        verifier_pass=True,
+        risk_score=0.1,
+        trust_score=0.9,
+        violations=[],
+        source="chat",
+    )
+
+    rows = store.recent_episodes(limit=2)
+    assert rows[0]["id"] == second_id
+    assert rows[1]["id"] == first_id
+    store.close()

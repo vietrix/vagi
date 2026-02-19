@@ -54,6 +54,29 @@ class FakeKernelGarbage(FakeKernel):
         return {"model_id": "genesis-v0", "text": "aaaaaaaaaaaaaaaa", "latency_ms": 7}
 
 
+class FakeKernelMicro(FakeKernel):
+    async def micro_ooda_run(
+        self,
+        input_text: str,
+        session_id: str | None = None,
+        risk_threshold: float = 0.45,
+        max_decide_iters: int = 2,
+    ) -> dict:
+        return {
+            "handled": True,
+            "reason": "micro_ooda_success",
+            "draft": "echo micro reflex draft",
+            "risk_score": 0.11,
+            "confidence": 0.93,
+            "verifier_pass": True,
+            "violations": [],
+            "iterations": 1,
+        }
+
+    async def homeostasis_status(self) -> dict:
+        return {"cortisol": 0.15, "energy": 0.86}
+
+
 class FakeMemoryClient:
     def __init__(self, hits: list[str]) -> None:
         self._hits = hits
@@ -154,4 +177,27 @@ def test_reasoner_injects_retrieved_context_into_infer_prompt(tmp_path: Path) ->
     retrieval_meta = result["metadata"]["observe"]["retrieval"]
     assert retrieval_meta["used"] is True
     assert retrieval_meta["hits_count"] == 2
+    store.close()
+
+
+def test_reasoner_prefers_micro_reflex_when_available(tmp_path: Path) -> None:
+    store = EpisodeStore(
+        db_path=tmp_path / "episodes.db",
+        long_term_path=tmp_path / "memory.jsonl",
+    )
+    reasoner = Reasoner(
+        kernel=FakeKernelMicro(),  # type: ignore[arg-type]
+        store=store,
+        max_decide_iters=4,
+        risk_threshold=0.65,
+    )
+    result = asyncio.run(
+        reasoner.run_chat(
+            session_id="sid-micro",
+            messages=[{"role": "user", "content": "fix typo in response"}],
+        )
+    )
+    assert result["metadata"]["ooda_trace"]["mode"] == "micro_reflex"
+    assert result["metadata"]["verifier"]["pass"] is True
+    assert "Kernel micro-reflex artifact" in result["content"]
     store.close()

@@ -19,11 +19,13 @@ use crate::models::{
     AffectDetectRequest, AffectDetectResponse, AffectModulateResponse, CausalStepDto,
     ErrorResponse, HealthResponse, HomeostasisStatusResponse, InitStateRequest,
     KnowledgeAddRequest, KnowledgeAddResponse, KnowledgeQueryRequest, KnowledgeQueryResponse,
-    MctsInferRequest, MctsInferResponse, MemoryAddRequest, MemoryAddResponse, MemoryAddTextRequest,
-    MemoryEmbedRequest, MemoryEmbedResponse, MemorySearchItem, MemorySearchRequest,
-    MemorySearchResponse, ModelInferRequest, ModelInferResponse, ModelLoadRequest,
-    ModelLoadResponse, ModelStatusResponse, SnapshotRequest, SnapshotResponse, UpdateStateRequest,
-    VerifierRequest, VerifierResponse, WorldSimulateRequest, WorldSimulateResponse,
+    MctsInferRequest, MctsInferResponse, MemoryAddRequest, MemoryAddResponse,
+    MemoryAddTextRequest, MemoryEmbedRequest, MemoryEmbedResponse, MemorySearchItem,
+    MemorySearchRequest, MemorySearchResponse, MicroOodaRequest, MicroOodaResponse,
+    MoeSelectRequest, MoeSelectResponse, MoeSelectionItem, ModelInferRequest, ModelInferResponse, ModelLoadRequest, ModelLoadResponse,
+    ModelStatusResponse, SnapshotRequest, SnapshotResponse, UpdateStateRequest,
+    VerifierActRequest, VerifierActResponse, VerifierRequest, VerifierResponse,
+    WorldSimulateRequest, WorldSimulateResponse,
 };
 
 pub fn build_router(ctx: Arc<KernelContext>) -> Router {
@@ -39,6 +41,8 @@ pub fn build_router(ctx: Arc<KernelContext>) -> Router {
         .route("/internal/state/snapshot", post(snapshot_state))
         .route("/internal/world/simulate", post(simulate_world))
         .route("/internal/verifier/check", post(verify_patch))
+        .route("/internal/verifier/act", post(verify_act))
+        .route("/internal/ooda/micro_run", post(micro_ooda_run))
         .route("/internal/memory/add", post(memory_add))
         .route("/internal/memory/add_text", post(memory_add_text))
         .route("/internal/memory/embed", post(memory_embed))
@@ -55,6 +59,7 @@ pub fn build_router(ctx: Arc<KernelContext>) -> Router {
         .route("/internal/knowledge/query", post(knowledge_query))
         .route("/internal/affect/detect", post(affect_detect))
         .route("/internal/affect/modulate", post(affect_modulate))
+        .route("/internal/moe/select", post(moe_select))
         .with_state(ctx)
 }
 
@@ -130,6 +135,109 @@ async fn verify_patch(
     Json(request): Json<VerifierRequest>,
 ) -> Json<VerifierResponse> {
     Json(ctx.verifier.check(&request))
+}
+
+async fn verify_act(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<VerifierActRequest>,
+) -> Json<VerifierActResponse> {
+    Json(ctx.verifier.execute_act(&request))
+}
+
+fn is_micro_ooda_candidate(input: &str) -> bool {
+    let lower = input.to_lowercase();
+    let blocked_keywords = [
+        "production",
+        "deploy",
+        "drop table",
+        "rm -rf",
+        "credential",
+        "secret",
+        "sudo",
+        "privilege",
+        "root",
+        "migration",
+    ];
+    if blocked_keywords.iter().any(|k| lower.contains(k)) {
+        return false;
+    }
+    let word_count = lower.split_whitespace().count();
+    word_count <= 80 && input.len() <= 1_200
+}
+
+async fn micro_ooda_run(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<MicroOodaRequest>,
+) -> Json<MicroOodaResponse> {
+    if !is_micro_ooda_candidate(&request.input) {
+        return Json(MicroOodaResponse {
+            handled: false,
+            reason: "high_risk_or_complex_request".to_string(),
+            draft: String::new(),
+            risk_score: 1.0,
+            confidence: 0.0,
+            verifier_pass: false,
+            violations: vec!["micro_ooda_not_applicable".to_string()],
+            iterations: 0,
+        });
+    }
+
+    let risk_threshold = request.risk_threshold.unwrap_or(0.45).clamp(0.05, 0.95);
+    let max_iters = request.max_decide_iters.unwrap_or(2).clamp(1, 4);
+    let session_id = request
+        .session_id
+        .unwrap_or_else(|| "micro-ooda-session".to_string());
+
+    let mut draft = format!(
+        "echo micro_ooda_start\nset objective=fast_safe_response\necho input:{}",
+        request.input.replace('\n', " ").trim()
+    );
+    let mut last_risk = 1.0_f32;
+    let mut last_confidence = 0.0_f32;
+    let mut last_violations: Vec<String> = Vec::new();
+    let mut last_verifier_pass = false;
+
+    for iter in 1..=max_iters {
+        let sim = ctx.world_model.simulate(&draft);
+        let verifier = ctx.verifier.check(&VerifierRequest {
+            patch_ir: draft.clone(),
+            max_loop_iters: Some(256),
+            side_effect_budget: Some(2),
+            timeout_ms: Some(40),
+        });
+        last_risk = sim.risk_score;
+        last_confidence = sim.confidence;
+        last_violations = verifier.violations.clone();
+        last_verifier_pass = verifier.pass;
+
+        if verifier.pass && sim.risk_score <= risk_threshold {
+            return Json(MicroOodaResponse {
+                handled: true,
+                reason: "micro_ooda_success".to_string(),
+                draft,
+                risk_score: sim.risk_score,
+                confidence: sim.confidence,
+                verifier_pass: true,
+                violations: verifier.violations,
+                iterations: iter,
+            });
+        }
+
+        draft = format!(
+            "{draft}\nwarn refinement_iter={iter}\nset guardrail=strict_validation\nappend trace=session:{session_id}"
+        );
+    }
+
+    Json(MicroOodaResponse {
+        handled: false,
+        reason: "micro_ooda_safety_gate_not_satisfied".to_string(),
+        draft,
+        risk_score: last_risk,
+        confidence: last_confidence,
+        verifier_pass: last_verifier_pass,
+        violations: last_violations,
+        iterations: max_iters,
+    })
 }
 
 async fn memory_add(
@@ -634,6 +742,26 @@ async fn affect_modulate(
         encouragement: modulation.encouragement,
         humor: modulation.humor,
         suggested_framing: modulation.suggested_framing,
+    })
+}
+
+async fn moe_select(
+    State(ctx): State<Arc<KernelContext>>,
+    Json(request): Json<MoeSelectRequest>,
+) -> Json<MoeSelectResponse> {
+    let selected = ctx.moe_gate.top2_gate(&request.embedding);
+    for item in &selected {
+        ctx.moe_gate.ensure_loaded(&item.expert_id);
+    }
+    Json(MoeSelectResponse {
+        selected: selected
+            .into_iter()
+            .map(|item| MoeSelectionItem {
+                expert_id: item.expert_id,
+                score: item.score,
+            })
+            .collect(),
+        loaded_count: ctx.moe_gate.loaded_count(),
     })
 }
 

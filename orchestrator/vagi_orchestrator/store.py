@@ -160,6 +160,22 @@ class EpisodeStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def recent_episodes(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, session_id, user_input, draft, verifier_pass,
+                       risk_score, trust_score, violations, source, created_at,
+                       policy_pass, policy_violations, ooda_trace,
+                       verifier_required, verifier_gate_pass
+                FROM episodes
+                ORDER BY id DESC
+                LIMIT ?;
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def pass_rate(self, window: int = 200) -> float:
         with self._lock:
             rows = self._conn.execute(
@@ -240,4 +256,3 @@ class EpisodeStore:
             "pass_rate": self.pass_rate(),
             "policy_fail_episodes": policy_fail,
         }
-

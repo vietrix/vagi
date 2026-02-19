@@ -74,10 +74,10 @@ class DreamRunResponse(BaseModel):
     regression_fail: int
     threshold: float
     promoted_episode_ids: list[int]
+    self_corrected: int = 0
 
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     kernel_reachable: bool
     runtime_dir: str
-
