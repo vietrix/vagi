@@ -61,3 +61,20 @@ vagi genesis infer --kernel-url http://127.0.0.1:17070 --prompt "User: Xin chao\
   - tighten generation guards if repeated policy failures appear
 - If verifier failures increase: inspect `violations` and adjust reasoner draft rules.
 - If dream promotion is blocked: inspect `pass_rate` and `regression_fail` from run report.
+
+## 7) Titanium Trainer (Current)
+
+Run:
+
+```bash
+cargo run -p vagi-kernel --bin train_titanium
+```
+
+Trainer hiện đã tích hợp:
+- Verifier-driven penalty + causal gradient signal
+- Epigenetic masking theo hormone (cortisol/dopamine)
+- World-model expert prefetching (worker thread)
+- Recursive HDC master memory (8192-bit)
+
+Theo dõi log:
+- `logic_penalty`, `causal_norm`, `epi_suppr`, `ternary_nz`, `sophia_clip`, `prefetch_loaded`, `hdc_rel`
